@@ -4,9 +4,9 @@
 
 Instructions to set up BRSKI test
 The brski .c files can be found under:
-https://gitlab.informatik.uni-bremen.de/obergman/libcoap/-/tree/oscore/src/brski
+https://github.com/petervanderstok/brski/src
 The brski .h files can be found under:
-https://gitlab.informatik.uni-bremen.de/obergman/libcoap/-/tree/oscore/include/coap2/brski
+https://github.com/petervanderstok/brski/include
 They are complemented with the libcoap development files under:
 https://gitlab.informatik.uni-bremen.de/obergman/libcoap/-/tree/develop
 
@@ -16,7 +16,7 @@ https://gitlab.informatik.uni-bremen.de/obergman/libcoap/-/tree/develop
 - The generated .o files are stored under ./coap/out/.
 - The Makefile is stored directly under ./coap.
 - Create directories ./coap/certificates and ./coap/certificates/brski and ./coap/certificates/conf
-- Under ./coap/certificates store brski-cert.sh
+- Under ./coap/certificates store brski-cert.sh and vendor-cert.sh
 - Under /.coap/certificates/conf store the openssl-masa.cnf, openssl-regis.cnf, and openssl-pledge.cnf
 - Run brski-certs.sh under ./coap. This should generate all certificates
 - Run make under ./coap.
