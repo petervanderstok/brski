@@ -38,14 +38,11 @@ https://gitlab.informatik.uni-bremen.de/obergman/libcoap/-/tree/develop
 ##changes to libcoap
 
 Changes done with “#ifdef WITH_OSCORE” to LIBCOAP files
-(1)	In coap_server.c
-Invoked oscore_init to create default oscore context and group oscore context.
-(2)	In coap_client.c 
-Introduces option “-E pkt_nr” with oscore-secure = 1 and oscore_sequence = seqnum;
+(1)	In coap_server.c: Invoked oscore_init to create default oscore context and group oscore context.
+(2)	In coap_client.c:Introduces option “-E pkt_nr” with oscore-secure = 1 and oscore_sequence = seqnum;
 -E pkt_nr specifies to use default  oscore context starting with packet number pkt_n
 Invoked oscore_init to create default oscore context and group oscore context
-(3)	In mem.h
-Added the malloc types for OSCORE and COSE
+(3)	In mem.h: Added the malloc types for OSCORE and COSE
 (4)	In pdu.h
 Added COAP_OPTION_OSCORE
 Added COAP_MAX_CHUNK_SIZE and OSCORE_CRYPTO_BUFFER_SIZE
