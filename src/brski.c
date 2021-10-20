@@ -537,6 +537,7 @@ brski_create_crt(coap_string_t *return_cert, uint8_t *data, size_t len){
  */
     RET_CHECK(mbedtls_x509write_crt_der( &crt, (unsigned char *)buf, CRT_BUF_SIZE,
                        NULL, NULL ));
+    assert(ret < CRT_BUF_SIZE);
     return_cert->s = coap_malloc(ret);
     return_cert->length = ret;
     memcpy(return_cert->s, buf + CRT_BUF_SIZE - ret, ret);
@@ -2564,12 +2565,14 @@ brski_json_readstatus(coap_string_t *log, status_t *status){
 	int64_t  mm = 0;
 	uint8_t  *data = log->s;
 	int8_t   ok = 0;
+	uint8_t  conclusion = VOUCHER_ACCEPTABLE;
     uint8_t json_text[JSON_TEXT_LENGTH];
     int ctr = json_get_control(&data); 
     if (ctr != JSON_CONTROL_OBJECT_START){
 		coap_log(LOG_ERR, "log JSON does not start with object \n");
 		return 1;
 	} 
+	
 	coap_string_t text = {.s = json_text, .length = 0};
 	/* find type voucher(_request) */
 	while (ctr != JSON_CONTROL_OBJECT_END){  /* go through whole voucher(_request) */
@@ -2590,22 +2593,21 @@ brski_json_readstatus(coap_string_t *log, status_t *status){
               if (ok == 0){
                  if (strncmp(One, (char *)text.s, text.length) != 0){
 				    /* wrong version   */
-				    status->acceptable = VOUCHER_REJECTED;
-				    return 1;
+				    conclusion = VOUCHER_REJECTED;
 				}  /* if strncmp */
 			  }  /* if ok  */
               break;
             case STS_STATUS:
               ok = json_get_number(&data, &mm);
               if (mm != VS_SUCCESS){
-				  status->acceptable = VOUCHER_REJECTED;
-				  return 1;
+				  conclusion = VOUCHER_REJECTED;
 			  }
               break;
             case STS_REASON:
               ok = json_get_text(&data, &text);
               if (ok == 0){
                  status->reason_len = text.length;
+                 if (status->reason != NULL)coap_free(status->reason);
                  status->reason = coap_malloc(text.length);
                  memcpy(status->reason, text.s, text.length);
 			  }  /* if ok  */
@@ -2613,18 +2615,17 @@ brski_json_readstatus(coap_string_t *log, status_t *status){
             case STS_CONTEXT:
               ok = json_get_text(&data, &text);
               if (ok == 0){
+				 if (status->additional_text != NULL)coap_free(status->additional_text);
                  status->additional_text_len = text.length;
                  status->additional_text = coap_malloc(text.length);
                  memcpy(status->additional_text, text.s, text.length);
 			  }  /* if ok  */
 			  break;
             default:
-              status->acceptable = VOUCHER_REJECTED;
               coap_log(LOG_ERR,"brski_json_readstatus: unknown key value\n");
               return 1;
 		  } /* switch  */
 		  if (ok == 1) {
-			  status->acceptable = VOUCHER_REJECTED;
 			  return 1;
 		  }
 		  ctr = json_get_control(&data); 
@@ -2633,6 +2634,7 @@ brski_json_readstatus(coap_string_t *log, status_t *status){
              return 1;
 		  }
 	  } /* while */
+	status->acceptable = conclusion;  
     return 0;        
 }
 
@@ -2657,6 +2659,7 @@ brski_cbor_readstatus(coap_string_t *log, status_t *status){
     uint8_t  elem = cbor_get_next_element(&data);
     uint8_t  * result;
     size_t   result_len;
+    int8_t   conclusion = VOUCHER_ACCEPTABLE;
 	if (elem != CBOR_MAP){
 		coap_log(LOG_WARNING,"cbor log does not start with cbor map \n");
 		return 1;
@@ -2664,16 +2667,16 @@ brski_cbor_readstatus(coap_string_t *log, status_t *status){
 	uint64_t map_size = cbor_get_element_size(&data);
     for (uint i=0 ; i < map_size; i++){
          uint8_t tag = read_tag(&data);
-         if (data > end_data) return 0;
+         if (data > end_data) return 1;
          switch (tag){
             case STS_VERSION:
+              ok = cbor_elem_contained(data, end_data);
+              if (ok == 1) goto error;
               ok = cbor_get_string_array(&data, &result, &result_len);
               if (ok == 0){
                  if (strncmp(One, (char *)result, result_len) != 0){
 				    /* wrong version   */
-				    coap_free(result);
-				    status->acceptable = VOUCHER_REJECTED;
-				    return 1;
+				    conclusion = VOUCHER_REJECTED;
 				}  /* if strncmp */
 			  }  /* if ok  */
 			  coap_free(result);
@@ -2681,33 +2684,38 @@ brski_cbor_readstatus(coap_string_t *log, status_t *status){
             case STS_STATUS:
               ok = cbor_get_number(&data, &mm);
               if (mm != VS_SUCCESS){
-				  status->acceptable = VOUCHER_REJECTED;
-				  return 1;
+				  conclusion = VOUCHER_REJECTED;
 			  }
               break;
             case STS_REASON:
+              ok = cbor_elem_contained(data, end_data);
+              if (ok == 1) goto error;
               ok = cbor_get_string_array(&data, &result, &result_len);
               if (ok == 0){
+				 if( status->reason != NULL) coap_free(status->reason);
                  status->reason = (char *)result;
                  status->reason_len = result_len;
 			  }  /* if ok  */
               break;
             case STS_CONTEXT:
+              ok = cbor_elem_contained(data, end_data);
+              if (ok == 1) goto error;
               ok = cbor_get_string_array(&data, &result, &result_len);
               if (ok == 0){
+				 if (status->additional_text != NULL) coap_free(status->additional_text);
                  status->additional_text = (char *)result;
                  status->additional_text_len = result_len;
 			  }  /* if ok  */
               break;
             default:
-              status->acceptable = VOUCHER_REJECTED;
               return 1;
 		  } /* switch  */
+error:
 		  if (ok == 1) {
-			  status->acceptable = VOUCHER_REJECTED;
 			  return 1;
 		  }
 	  }  /* for */
+	status->acceptable = conclusion;
     return 0;        
 }
 

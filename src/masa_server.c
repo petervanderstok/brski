@@ -846,7 +846,7 @@ usage( const char *program) {
 int
 main(int argc, char **argv) {
     int opt;
-	while ((opt = getopt(argc, argv, "p:v:")) != -1) {
+	while ((opt = getopt(argc, argv, "p:h:v:")) != -1) {
     switch (opt) {
     case 'p' :
       strncpy(port_str, optarg, NI_MAXSERV-1);

@@ -262,6 +262,18 @@ coap_string_t *getURI( uint8_t port_type){
 	}  /* switch */	
 }
 
+static void
+remove_URIs( void ){
+	coap_string_t *temp = getURI(JP_STANDARD_PORT);
+	if (temp->s != NULL)coap_free(temp->s);
+	temp->s = NULL;
+	temp = getURI(JP_DTLS_PORT);	
+	if (temp->s != NULL)coap_free(temp->s);
+	temp->s = NULL;
+	temp = getURI(JP_BRSKI_PORT);
+	if (temp->s != NULL)coap_free(temp->s);
+	temp->s = NULL;	
+}
 
 void
 init_URIs(coap_address_t *addr, uint8_t proto, uint8_t port_type){
@@ -343,11 +355,11 @@ init_URIs(coap_address_t *addr, uint8_t proto, uint8_t port_type){
 				  dest->s[pre_len + host_len]     = ']';
 				  dest->s[pre_len + host_len + 1] = ':';
 				  int temp = port;
-				  for (uint qq = 0 ; qq < 4; qq++){  /* write port number  */
+				    for (uint qq = 0 ; qq < 4; qq++){  /* write port number  */
 					  uint8_t cipher = temp - 10*(temp/10);
 					  dest->s[port_len -2 - qq] = cipher + '0';
 					  temp = temp/10;
-				  }
+				    } /* for*/
 				  dest->s[port_len-1] = 0;
 			      } /* strcmp ifa_name */
 			    }  /* strcmp lln */
@@ -865,12 +877,17 @@ message_handler(struct coap_context_t *ctx,
   } else {      /* no 2.05 */
 
     /* check if an error was signaled and output payload if so */
-    if (COAP_RESPONSE_CLASS(received->code) >= 4) {
-      fprintf(stderr, "%d.%02d",
-              (received->code >> 5), received->code & 0x1F);
-      cur_resp_handler(databuf, len, received->code, 0, 0);
-    }
-
+      if (COAP_RESPONSE_CLASS(received->code) >= 4) {
+	     len = 0;
+	     if (coap_get_data(received, &len, &databuf)){
+		   if (len > 0){
+		        databuf[len] = 0;
+                coap_log(LOG_WARNING, "%d.%02d:  %s", (received->code >> 5), received->code & 0x1F, databuf);
+           } else 
+                coap_log(LOG_WARNING, "%d.%02d: ", (received->code >> 5), received->code & 0x1F);
+	     }
+         cur_resp_handler(databuf, len, received->code, 0, 0);
+      }
   }
 
   /* any pdu that has been created in this function must be sent by now */
@@ -938,7 +955,7 @@ create_uri_options(client_request_t *client, uint16_t ct){
   unsigned char *buf = _buf;
   size_t buflen;
   int res;
-      if (client->uri.port != get_default_port(&client->uri) && client->create_uri_opts) {
+      if (client->uri.port != get_default_port((const void *)&client->uri) && client->create_uri_opts) {
       coap_insert_optlist(&client->optlist,
                   coap_new_optlist(COAP_OPTION_URI_PORT,
                                    coap_encode_var_safe(portbuf, sizeof(portbuf),
@@ -1050,8 +1067,6 @@ verify_pki_sni_callback(const char *sni,
 
 static coap_dtls_pki_t *
 setup_pki(client_request_t *client) {
-//  static coap_dtls_pki_t dtls_pki;
-//  static char client_sni[256];
 
   /* If general root CAs are defined */
   if (client->root_ca_file) {
@@ -1272,6 +1287,7 @@ void set_block(client_request_t *client, uint16_t size){
 }
 
 void set_path( client_request_t *client, coap_string_t * path){
+  if (client->uri.path.s != NULL) coap_free(client->uri.path.s);
   if (path == NULL){
 	  client->uri.path.s = NULL;
 	  client->uri.path.length = 0;
@@ -1310,12 +1326,13 @@ void set_token(client_request_t *client, coap_binary_t *token){
 	client->the_token.length = token->length;
 }
 
-coap_str_const_t * get_host(client_request_t *client){
+coap_string_t * get_host(client_request_t *client){
 	return &client->uri.host;
 }
 
 
 void set_host(client_request_t *client, coap_string_t *host){
+  if( client->uri.host.s != NULL) coap_free( client->uri.host.s);
   if (host == NULL){
 	  client->uri.host.s = NULL;
 	  client->uri.host.length = 0;
@@ -1330,6 +1347,7 @@ void set_host(client_request_t *client, coap_string_t *host){
 
 
 void set_query(client_request_t *client, coap_string_t *query){
+  if (client->uri.query.s != NULL) coap_free(client->uri.query.s);
   if (query == NULL){
 	  client->uri.query.s = NULL;
 	  client->uri.query.length = 0;
@@ -1420,11 +1438,11 @@ coap_start_session(client_request_t *client){
   unsigned char user[MAX_USER + 1], key[MAX_KEY];
   ssize_t user_length = -1, key_length = 0;
   reset_block(client);
-  coap_str_const_t server;  
-    server = client->uri.host;
+  coap_string_t server;  
+  server = client->uri.host;
 
   /* resolve destination address where server should be sent */
-    int res = resolve_address(&server, &dst.addr.sa);
+    int res = resolve_address((coap_str_const_t *)&server, &dst.addr.sa);
 
     if (res < 0) {
       coap_log(LOG_WARNING, "failed to resolve address\n");
@@ -1532,7 +1550,8 @@ coap_start_request(client_request_t *client, uint16_t ct){
 }
 
 
-void end_coap_client(client_request_t *client, coap_context_t *ctx){
+static void 
+end_coap_client(client_request_t *client){
   size_t i;
   for (uint i = 0; i < valid_ihs.count; i++) {
     free(valid_ihs.ih_list[i].hint_match);
@@ -1567,12 +1586,34 @@ void end_coap_client(client_request_t *client, coap_context_t *ctx){
   if (valid_pki_snis.count)
     free(valid_pki_snis.pki_sni_list);
 
-  coap_free_context(ctx);
   coap_cleanup();
   coap_delete_optlist(client->optlist);
   client->optlist = NULL;
   coap_session_release( client->session );
-  coap_free_context( ctx );
+  if (client->ctx != NULL){
+	  coap_free_context( client->ctx );
+  }
+  if (client->proxy.s != NULL)coap_free(client->proxy.s);
+  if (client->payload.s != NULL) coap_free(client->payload.s); 
+  if (client->uri.path.s != NULL) coap_free(client->uri.path.s); 
+  if (client->uri.query.s != NULL) coap_free(client->uri.query.s);
+  if( client->uri.host.s != NULL){
+	 uint8_t *temp = NULL;
+	 memcpy(&temp, &(client->uri.host.s), sizeof(uint8_t *));
+	 coap_free( temp);
+  }
+  coap_free(client->the_token.s);
+  coap_free(client);  
   coap_cleanup();
 }
 
+void
+Clean_client_request(void){  
+  client_request_t *temp = CLIENT_REQUEST;	
+  while (temp != NULL) {
+	  CLIENT_REQUEST = temp->next;
+      end_coap_client(temp);
+      temp = CLIENT_REQUEST;
+  }   
+  remove_URIs();  
+}

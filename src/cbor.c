@@ -47,10 +47,6 @@
 #include "coap_debug.h"
 #include "brski_util.h"
 
-/* when brski_util is not found or used */
-#define    COAP_MALLOC          coap_malloc
-#define    COAP_FREE            coap_free
-
 
 int
 cbor_put_nil(uint8_t **buffer){
@@ -236,7 +232,6 @@ cbor_elem_contained(uint8_t *data, uint8_t *end){
 	uint8_t *buf = data; 
 	uint8_t *last = data + cbor_get_element_size(&buf);
 	if (last > end){
-		fprintf(stderr,"cbor_elem_contained returns 1 \n");
 		return 1;
 	}
 	else return 0;
@@ -306,7 +301,7 @@ cbor_get_string_array(uint8_t **data, uint8_t **result, size_t *len){
   uint8_t elem = cbor_get_next_element(data);
   *len = cbor_get_element_size(data);
   *result = NULL;
-  void *rs = COAP_MALLOC( *len);
+  void *rs = coap_malloc( *len);
   *result = (uint8_t *) rs;
   if (elem == CBOR_TEXT_STRING){ 
        cbor_get_string(data, (char *)*result, *len);
@@ -317,7 +312,7 @@ cbor_get_string_array(uint8_t **data, uint8_t **result, size_t *len){
        return 0;  /* all is well */
   }
   else {
-    COAP_FREE(*result);
+    coap_free(*result);
     *result = NULL;
     return 1;  /* failure */
   }
@@ -383,7 +378,7 @@ uint8_t
 cbor_strip_value(uint8_t **data, uint8_t **result, size_t *len){
    uint8_t *st_data = *data;
    size_t size = cbor_skip_value(data);
-   *result = COAP_MALLOC(size);
+   *result = coap_malloc(size);
    for (uint16_t qq = 0; qq < size; qq++)(*result)[qq] = st_data[qq];
    *len = size;
    return 0;

@@ -158,12 +158,12 @@ add_audit(unsigned char *data, size_t len, uint16_t code,
   }
   size_t offset = registrar_audit.length;
       /* Add in new block to end of current data */
-  coap_string_t new_mess = {.length = registrar_audit.length, .s = registrar_audit.s};
+  coap_string_t old_mess = {.length = registrar_audit.length, .s = registrar_audit.s};
   registrar_audit.length = offset + len;
   registrar_audit.s = coap_malloc(offset+len);
   if (offset != 0) 
-     memcpy (registrar_audit.s, new_mess.s, offset);  /* copy old contents  */
-  if (new_mess.s != NULL)coap_free(new_mess.s);
+     memcpy (registrar_audit.s, old_mess.s, offset);  /* copy old contents  */
+  if (old_mess.s != NULL)coap_free(old_mess.s);
   memcpy(registrar_audit.s + offset, data, len);         /* add new contents  */
   audit_code = code;
   return 0;
@@ -187,12 +187,12 @@ add_voucher(unsigned char *data, size_t len, uint16_t code,
   }
   size_t offset = masa_voucher.length;
       /* Add in new block to end of current data */
-  coap_string_t new_mess = {.length = masa_voucher.length, .s = masa_voucher.s};
+  coap_string_t old_mess = {.length = masa_voucher.length, .s = masa_voucher.s};
   masa_voucher.length = offset + len;
   masa_voucher.s = coap_malloc(offset+len);
   if (offset != 0) 
-     memcpy (masa_voucher.s, new_mess.s, offset);  /* copy old contents  */
-  if (new_mess.s != NULL)coap_free(new_mess.s);
+     memcpy (masa_voucher.s, old_mess.s, offset);  /* copy old contents  */
+  if (old_mess.s != NULL)coap_free(old_mess.s);
   memcpy(masa_voucher.s + offset, data, len);         /* add new contents  */ 
   masa_code = code;
   return 0;
@@ -216,12 +216,12 @@ add_certificate(unsigned char *data, size_t len, uint16_t code,
   }
   size_t offset = registrar_cert.length;
       /* Add in new block to end of current data */
-  coap_string_t new_mess = {.length = registrar_cert.length, .s = registrar_cert.s};
+  coap_string_t old_mess = {.length = registrar_cert.length, .s = registrar_cert.s};
   registrar_cert.length = offset + len;
   registrar_cert.s = coap_malloc(offset+len);
   if (offset != 0) 
-     memcpy (registrar_cert.s, new_mess.s, offset);  /* copy old contents  */
-  if (new_mess.s != NULL)coap_free(new_mess.s);
+     memcpy (registrar_cert.s, old_mess.s, offset);  /* copy old contents  */
+  if (old_mess.s != NULL)coap_free(old_mess.s);
   memcpy(registrar_cert.s + offset, data, len);         /* add new contents  */
   cert_code = code;
   return 0;
@@ -1280,11 +1280,12 @@ usage( const char *program, const char *version) {
      "\t       \t\tif not specified, default coap/coaps server ports are used \n"
      "\t-E num \t\t edhoc is used with num is method*100 + suite*10 + corr \n"
      "\tregistrar address\t specifies the IP address and [port] of Registrar \n"
-     "\t       \t\t  If not specified , registrar is discovered with multicast request \n"
+     "\t       \t\t If not specified , Registrar or Join Proxy \n"
+     "\t       \t\t is discovered with multicast request \n"
      "\t-h     \t\tHelp displays this message \n"     
      "\texamples:\t  %s \n"
      "\t       \t\t  %s -R \n"
-     "\t       \t\t  %s coaps://localhost:coaps_port \n"
+     "\t       \t\t  %s coaps://localhost:5664 \n"
     , program, version, coap_string_tls_version(buffer, sizeof(buffer)),
     program, program, program, program);
 }
@@ -1304,6 +1305,9 @@ int
 pledge_get_contexts(client_request_t *client, client_request_t *server, const char *node, const char *port) {
   coap_context_t *ctx_s = NULL;
   coap_context_t *ctx_c = NULL;
+  coap_endpoint_t *ep_udp = NULL;
+  coap_endpoint_t *ep_dtls = NULL;
+  coap_endpoint_t *ep_jp = NULL;       
   int s;
   struct addrinfo hints;
   struct addrinfo *result, *rp;
@@ -1336,12 +1340,10 @@ pledge_get_contexts(client_request_t *client, client_request_t *server, const ch
   server->ctx = ctx_s;
   set_pki_callback( server, verify_cn_callback);  /* set the call back   */
   fill_keystore( server);
-  
+
   /* iterate through results until success */
   for (rp = result; rp != NULL; rp = rp->ai_next) {
     coap_address_t addr, addrs, addrj;
-    coap_endpoint_t *ep_udp = NULL, *ep_dtls = NULL, *ep_jp = NULL;
-
     if (rp->ai_addrlen <= sizeof(addr.addr)) {
       coap_address_init(&addr);
       addr.size = (socklen_t)rp->ai_addrlen;
@@ -1485,7 +1487,7 @@ pledge_registrar_session(client_request_t *client, uint16_t *port){
   }
   reset_resp_handler();
   jp_set_registrar_session( session);
-  int8_t coap_fd = coap_context_get_coap_fd(client->ctx);
+//  int8_t coap_fd = coap_context_get_coap_fd(client->ctx);
   return 0;
 }
 
@@ -1659,7 +1661,7 @@ const char *state_names[] = { "START", "DISCOVERED", "CONNECTED", "RV_DONE", "VS
   coap_set_log_level(log_level);
   /* all coap_local_nodes is used for discovery *
    * unless addres is specified in command line  */
-  coap_str_const_t *tmp_host = NULL;
+  coap_string_t *tmp_host = NULL;
   uint16_t tmp_port = 0;
   char acln[] = ALL_COAP_LOCAL_IPV4_NODES;
   coap_string_t MC_coap = {.s = (uint8_t *)acln,.length = strlen(acln)};
@@ -1949,7 +1951,7 @@ const char *state_names[] = { "START", "DISCOVERED", "CONNECTED", "RV_DONE", "VS
     check_async(client->ctx, now);
 #endif /* WITHOUT_ASYNC */
   }
-
+  Clean_client_request();
   return 0;
 }
 
