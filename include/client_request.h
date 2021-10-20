@@ -18,7 +18,19 @@ typedef int16_t (*coap_resp_handler_t)
        uint16_t code,        /* message code     */  
        uint16_t block_num,   /* block number     */
        uint16_t more);       /* more blocks      */
-       
+
+/* redefinition of coap_uri_t  */
+typedef struct {
+  coap_string_t host;  /**< host part of the URI */
+  uint16_t port;          /**< The port in host byte order */
+  coap_string_t path;  /**< Beginning of the first path segment.
+                           Use coap_split_path() to create Uri-Path options */
+  coap_string_t query; /**<  The query part if present */
+
+  /** The parsed scheme specifier. */
+  enum coap_uri_scheme_t scheme;
+} client_uri_t;
+
 /* parameters to be set for given client request */
 typedef struct client_request_t {
    void * next;
@@ -47,7 +59,7 @@ typedef struct client_request_t {
    int reliable;
    coap_optlist_t *optlist;
    coap_binary_t  the_token;
-   coap_uri_t uri;                     /* request URI */
+   client_uri_t uri;                     /* request URI */
    coap_string_t proxy;
    coap_string_t payload;       /* optional payload to send */
    coap_session_t *session;
@@ -72,7 +84,7 @@ void
 fill_keystore(client_request_t *client);
 
 void 
-end_coap_client(client_request_t *client, coap_context_t *ctx);
+Clean_client_request(void);
 
 int8_t 
 is_ready(void);
@@ -116,7 +128,7 @@ set_path( client_request_t *client, coap_string_t *path);
 void 
 get_path( client_request_t *client, coap_string_t *path);
 
-coap_str_const_t *
+coap_string_t *
 get_host(client_request_t *client);
 
 void 
