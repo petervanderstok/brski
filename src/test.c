@@ -260,7 +260,7 @@ test_status_response(client_request_t *client, char *ca_name, char *masa_serv_na
   }
   coap_string_t *voucher = NULL;
   if (JSON_set() == JSON_OFF)
-      voucher = brski_verify_cose_signature(&registrar_response, masa_serv_name);
+      voucher = brski_verify_cose_signature(&registrar_response, masa_serv_name, ca_name);
   else
       voucher = brski_verify_cms_signature(&registrar_response, ca_name, masa_serv_name);
   if (voucher == NULL){
@@ -282,7 +282,7 @@ test_status_response(client_request_t *client, char *ca_name, char *masa_serv_na
 }
 
 static int8_t  
-test_voucher_request(client_request_t *client, char *file_name, int divisor){ 
+test_voucher_request(client_request_t *client, char *register_cert, char *pledge_comb, int divisor){ 
   coap_string_t  signed_request_voucher = { .length = 0 , .s = NULL};	
   if (client == NULL)return 1;
 	/* continue session to registrar with returned registrar certificate*/
@@ -302,7 +302,7 @@ test_voucher_request(client_request_t *client, char *file_name, int divisor){
   if (registrar_response.s != NULL) coap_free(registrar_response.s);
   registrar_response.s = NULL;
   registrar_code = 0;  
-  int8_t ok = brksi_make_signed_rv(&signed_request_voucher, &request_voucher, file_name);   
+  int8_t ok = brksi_make_signed_rv(&signed_request_voucher, &request_voucher, register_cert, pledge_comb);   
   signed_request_voucher.length = (signed_request_voucher.length*divisor)/10;
   set_payload(client, &signed_request_voucher);
   coap_free(signed_request_voucher.s);   
@@ -505,45 +505,45 @@ void do_local_tests(void){
 
    set_JSON(JSON_OFF);
 //brski_cbor_voucherrequest: creates cbor_PVR 
-             TEST_NOK(brski_cbor_voucherrequest(NULL, NULL));
-             TEST_NOK(brski_cbor_voucherrequest(&ret_data, NULL));
+             TEST_NOK(brski_cbor_voucherrequest(NULL, NULL, pledge_crt));
+             TEST_NOK(brski_cbor_voucherrequest(&ret_data, NULL, pledge_crt));
              if (ret_data.s != NULL){
 				 fprintf(stderr,"      ERROR: ret_data.s points to data and should be empty\n");
 				 coap_free(ret_data.s);
 				 ret_data.s = NULL;
 				 ret_data.length = 0;				  
 			 }
-             TEST_NOK(brski_cbor_voucherrequest(NULL, &certificate));
-             TEST_NOK(brski_cbor_voucherrequest(&ret_data, &any)); 
+             TEST_NOK(brski_cbor_voucherrequest(NULL, &certificate, pledge_crt));
+             TEST_NOK(brski_cbor_voucherrequest(&ret_data, &any, pledge_crt)); 
              if (ret_data.s != NULL){
 				 fprintf(stderr,"      ERROR: ret_data.s points to data and should be empty\n");
 				 coap_free(ret_data.s);
 				 ret_data.s = NULL;
 				 ret_data.length = 0;				  
 			 } 
-             TEST_OK(brski_cbor_voucherrequest(&cbor_PVR, &certificate));
+             TEST_OK(brski_cbor_voucherrequest(&cbor_PVR, &certificate, pledge_crt));
              if (cbor_PVR.s == NULL)
 				 fprintf(stderr,"      ERROR: cbor_PVR.s is empty, should contain cbor voucher_request\n");		 
 //brski_make_signed_rv	creates cose_sign_PVR and cbor_PVR
 			 coap_free(cbor_PVR.s);		
-             TEST_NOK(brksi_make_signed_rv(&nothing, &ret_data, file_name)); 
+             TEST_NOK(brksi_make_signed_rv(&nothing, &ret_data, file_name, comb_file)); 
              if (ret_data.s != NULL){
 				 fprintf(stderr,"     brksi_make_signed_rv returns unexpected data \n"); 
 				 coap_free(ret_data.s);
 				 ret_data.s = NULL;
 				 ret_data.length = 0;				  
 			 }
-             TEST_NOK(brksi_make_signed_rv(NULL, NULL, empty)); 
-             TEST_NOK(brksi_make_signed_rv(NULL, NULL, pledge_crt)); 
-             TEST_NOK(brksi_make_signed_rv(&any, NULL, pledge_crt));             
-             TEST_NOK(brksi_make_signed_rv(NULL, &ret_data, pledge_crt)); 
+             TEST_NOK(brksi_make_signed_rv(NULL, NULL, empty, comb_file)); 
+             TEST_NOK(brksi_make_signed_rv(NULL, NULL, pledge_crt, comb_file)); 
+             TEST_NOK(brksi_make_signed_rv(&any, NULL, pledge_crt, comb_file));             
+             TEST_NOK(brksi_make_signed_rv(NULL, &ret_data, pledge_crt, comb_file)); 
             if (ret_data.s != NULL){
 				 fprintf(stderr,"     brksi_make_signed_rv returns unexpected data \n");
 				 coap_free(ret_data.s); 
 				 ret_data.s = NULL;
 				 ret_data.length = 0;				  
 			 } 	                         			     			 
-             TEST_OK(brksi_make_signed_rv(&cose_sign_PVR, &cbor_PVR, pledge_crt)); 
+             TEST_OK(brksi_make_signed_rv(&cose_sign_PVR, &cbor_PVR, pledge_crt, comb_file)); 
              if ((cose_sign_PVR.s == NULL) || (cbor_PVR.s == NULL)) 
                                   fprintf(stderr, "     brksi_make_signed_rv did not return expected data  \n");                          
 //brski_parse_cbor_voucher creates P_PVR
@@ -570,25 +570,24 @@ void do_local_tests(void){
              char crt[] = PLEDGE_CRT;
              char *cert_file = crt;
              coap_free(cose_sign_PVR.s);
-             TEST_NOK(brski_cose_sign_payload(NULL, NULL, empty, empty));  
-             TEST_NOK(brski_cose_sign_payload(NULL, NULL, key_file, empty)); 
-             TEST_NOK(brski_cose_sign_payload(NULL, NULL, empty, cert_file)); 
-             TEST_NOK(brski_cose_sign_payload(NULL, NULL, key_file, cert_file));
-             TEST_NOK(brski_cose_sign_payload(NULL, &cbor_PVR, key_file, cert_file));
-             TEST_NOK(brski_cose_sign_payload(&cose_sign_PVR, NULL, key_file, cert_file));                  
-             TEST_NOK(brski_cose_sign_payload(&nothing, &nothing, file_name, file_name));
-             TEST_NOK(brski_cose_sign_payload(&nothing, &cbor_PVR, file_name, file_name));  
-             TEST_NOK(brski_cose_sign_payload(&cose_sign_PVR, &nothing,file_name,file_name));                            
-             TEST_NOK(brski_cose_sign_payload(&cose_sign_PVR, &cbor_PVR,key_file,file_name));
-             TEST_NOK(brski_cose_sign_payload(&cose_sign_PVR, &cbor_PVR,file_name,cert_file));                                                         
-             TEST_OK(brski_cose_sign_payload(&cose_sign_PVR,&cbor_PVR,key_file,cert_file));
+             TEST_NOK(brski_cose_sign_payload(NULL, NULL, empty));  
+             TEST_NOK(brski_cose_sign_payload(NULL, NULL, key_file)); 
+             TEST_NOK(brski_cose_sign_payload(NULL, NULL, cert_file)); 
+             TEST_NOK(brski_cose_sign_payload(NULL, NULL, comb_file));
+             TEST_NOK(brski_cose_sign_payload(NULL, &cbor_PVR, comb_file));
+             TEST_NOK(brski_cose_sign_payload(&cose_sign_PVR, NULL, comb_file));                  
+             TEST_NOK(brski_cose_sign_payload(&nothing, &nothing, file_name));
+             TEST_NOK(brski_cose_sign_payload(&nothing, &cbor_PVR, file_name));  
+             TEST_NOK(brski_cose_sign_payload(&cose_sign_PVR, &nothing,file_name));                            
+             TEST_NOK(brski_cose_sign_payload(&cose_sign_PVR, &cbor_PVR,file_name));                                                        
+             TEST_OK(brski_cose_sign_payload(&cose_sign_PVR,&cbor_PVR,comb_file));
              if (cose_sign_PVR.s == NULL)fprintf(stderr, "       brski_cose_sign_payload did not return cbor voucher_request data \n");                             
 //brski_verify_cose_signature
-             TEST_NULL(brski_verify_cose_signature(NULL, empty)); 
-             TEST_NULL(brski_verify_cose_signature(&cose_sign_PVR, empty)); 
-             TEST_NULL(brski_verify_cose_signature(NULL, pledge_crt)); 
-             TEST_NULL(brski_verify_cose_signature(&cose_sign_PVR, file_name)); 
-             TEST_PT(brski_verify_cose_signature(&cose_sign_PVR, pledge_crt)); 
+             TEST_NULL(brski_verify_cose_signature(NULL, empty, pledge_ca )); 
+             TEST_NULL(brski_verify_cose_signature(&cose_sign_PVR, empty, pledge_ca)); 
+             TEST_NULL(brski_verify_cose_signature(NULL, pledge_crt, pledge_ca)); 
+             TEST_NULL(brski_verify_cose_signature(&cose_sign_PVR, file_name, pledge_ca)); 
+             TEST_PT(brski_verify_cose_signature(&cose_sign_PVR, pledge_crt, pledge_ca)); 
              if(pt != NULL) {
 				 coap_string_t *sp = pt;
 				 if (sp->s != NULL)coap_free(sp->s);
@@ -675,46 +674,46 @@ void do_local_tests(void){
     printf(" start JSON routines \n");
 	set_JSON(JSON_ON);	
 //brski_json_voucherrequest: creates json_PVR  
-             TEST_NOK(brski_json_voucherrequest(NULL, NULL));
-             TEST_NOK(brski_json_voucherrequest(&ret_data, NULL));
+             TEST_NOK(brski_json_voucherrequest(NULL, NULL, pledge_crt));
+             TEST_NOK(brski_json_voucherrequest(&ret_data, NULL, pledge_crt));
              if (ret_data.s != NULL){
 				 fprintf(stderr,"      ERROR: ret_data.s points to data and should be empty\n");
 				 coap_free(ret_data.s);
 				 ret_data.s = NULL;
 				 ret_data.length = 0;				  
 			 }
-             TEST_NOK(brski_json_voucherrequest(NULL, &certificate));
-             TEST_NOK(brski_json_voucherrequest(&ret_data, &any)); 
+             TEST_NOK(brski_json_voucherrequest(NULL, &certificate, pledge_crt));
+             TEST_NOK(brski_json_voucherrequest(&ret_data, &any, pledge_crt)); 
              if (ret_data.s != NULL){
 				 fprintf(stderr,"      ERROR: ret_data.s points to data and should be empty\n");
 				 coap_free(ret_data.s);
 				 ret_data.s = NULL;
 				 ret_data.length = 0;				  
 			 }                                                               
-             TEST_OK(brski_json_voucherrequest(&json_PVR, &certificate)); 
+             TEST_OK(brski_json_voucherrequest(&json_PVR, &certificate, pledge_crt)); 
              if (json_PVR.s == NULL)
 				        fprintf(stderr,"      ERROR: json_PVR.s is empty, should contain json voucher_request\n");
 			 else coap_free(json_PVR.s);
 			 json_PVR.s = NULL;
 //brski_make_signed_rv creates cms_sign_PVR	and json_PVR	
-             TEST_NOK(brksi_make_signed_rv(&nothing, &ret_data, file_name)); 
+             TEST_NOK(brksi_make_signed_rv(&nothing, &ret_data, file_name, comb_file)); 
              if (ret_data.s != NULL){
 				 fprintf(stderr,"     brksi_make_signed_rv returns unexpected data \n"); 
 				 coap_free(ret_data.s);
 				 ret_data.s = NULL;
 				 ret_data.length = 0;				  
 			 }
-             TEST_NOK(brksi_make_signed_rv(NULL, NULL, empty)); 
-             TEST_NOK(brksi_make_signed_rv(NULL, NULL, pledge_crt)); 
-             TEST_NOK(brksi_make_signed_rv(&any, NULL, pledge_crt));             
-             TEST_NOK(brksi_make_signed_rv(NULL, &ret_data, pledge_crt)); 
+             TEST_NOK(brksi_make_signed_rv(NULL, NULL, empty, comb_file)); 
+             TEST_NOK(brksi_make_signed_rv(NULL, NULL, pledge_crt, comb_file)); 
+             TEST_NOK(brksi_make_signed_rv(&any, NULL, pledge_crt, comb_file));             
+             TEST_NOK(brksi_make_signed_rv(NULL, &ret_data, pledge_crt, comb_file)); 
              if (ret_data.s != NULL){
 				 fprintf(stderr,"     brksi_make_signed_rv returns unexpected data \n");
 				 coap_free(ret_data.s); 
 				 ret_data.s = NULL;
 				 ret_data.length = 0;				  
 			 } 			 	                         			     			 
-             TEST_OK(brksi_make_signed_rv(&cms_sign_PVR, &json_PVR, pledge_crt)); 
+             TEST_OK(brksi_make_signed_rv(&cms_sign_PVR, &json_PVR, pledge_crt, comb_file)); 
              if ((cms_sign_PVR.s == NULL) || (json_PVR.s == NULL)) fprintf(stderr, "     brksi_make_signed_rv did not return expected data  \n");          
 //brski_parse_json_voucher creates P_PVR         
              TEST_NULL(brski_parse_json_voucher(NULL));
@@ -1005,7 +1004,7 @@ main(int argc, char **argv) {
 
 /* do tests locally in this process */ 
  
-   do_local_tests();
+    do_local_tests();
  
 /* do tests by invoking registrar remotely */
   coap_startup();
@@ -1043,20 +1042,28 @@ main(int argc, char **argv) {
   wait_ms = COAP_RESOURCE_CHECK_TIME * 1000;
     coap_string_t new_host;
     new_host.length = tmp_host->length;
-    new_host.s = coap_malloc(tmp_host->length);
+    new_host.s = coap_malloc(tmp_host->length+1);
     memcpy(new_host.s, tmp_host->s, tmp_host->length); /* const pointer */
+    new_host.s[tmp_host->length] = 0;
     set_host( client, &new_host);
     set_port( client, tmp_port);
-    coap_free(new_host.s);
     set_JSON(JSON_OFF);
     make_ready();
     int cnt = 0;    /* divisor for payload */
     int ct  = COAP_MEDIATYPE_APPLICATION_CBOR;
-    char *file_name = NULL;
-    char cmc[] = CA_MASA_CRT;
-    char msc[] = MASA_SRV_CRT;
-    char psd[] = PLEDGE_SERVER_DER;    /* contains registrar certificate in DER */  
-    char pec[] = PLEDGE_ED25519_CRT;    /* contains random certificate */ 
+    char *register_cert = NULL;
+    char *pledge_comb = NULL;
+    char cmc[]       = CA_MASA_CRT;
+    char msc[]       = MASA_SRV_CRT;
+    char psd[]       = PLEDGE_SERVER_DER;    /* contains registrar certificate in DER */  
+    char pec[]       = PLEDGE_ED25519_CRT;    /* contains random certificate */ 
+    char nokey[]     = PLEDGE_CRT;
+    char nocrt[]     = PLEDGE_KEY;
+    char noES256[]   = PLEDGE_ED25519_COMB;
+    char wr_issuer[] = "./certificates/wrong_certificates/certs/pledge_wr_issuer-comb.crt";
+    char wr_url[]    = "./certificates/wrong_certificates/certs/pledge_wr_url-comb.crt";
+    char no_url[]    = "./certificates/wrong_certificates/certs/pledge_no_url-comb.crt";  
+    char wr_valid[]  = "./certificates/wrong_certificates/certs/pledge_wr_valid-comb.crt"; 
    
 /* certificates for DTLS connection  */ 
   static char cert_nm[] = PLEDGE_COMB; 
@@ -1074,18 +1081,20 @@ main(int argc, char **argv) {
 /*   connect pledge to registrar  */ 
              TEST_OK(test_connect_pledge( client)); /* make DTLS connection */                        
 /* test /.well-known/brski/rv with differen payload sizes */
-             file_name = pec;	/* file name is wrong  */
+             register_cert = pec;	/* file name is wrong  */
              cnt = 1;   /* 0 < cnt < 11; determines that cnt/10 of payload is transmitted  */
- 	         TEST_NOK(test_voucher_request( client, file_name, cnt));         	                   
-	         file_name = psd; /* correct file name */ 
-             testing = REQUEST_VOUCHER;	                 
-	         TEST_OK(test_voucher_request( client, file_name, cnt));  	         
+ 	         TEST_NOK(test_voucher_request( client, register_cert, pledge_comb, cnt));         	                   
+	         register_cert = psd; /* correct file name */ 
+	         pledge_comb = cert_nm;
+ //            testing = REQUEST_VOUCHER;	
+             testing = REQUEST_VOUCHER;              
+	         TEST_OK(test_voucher_request( client, register_cert, pledge_comb, cnt));  	         
 	         break;
 	       case REQUEST_VOUCHER: 
 	         cnt++;  
 	         if (cnt > 1 && cnt < 11){
 		         TEST_NOK(pledge_arrived(registrar_code, &registrar_response));
-		         TEST_OK(test_voucher_request( client, file_name, cnt));       
+		         TEST_OK(test_voucher_request( client, register_cert, pledge_comb, cnt));       
              } else if (cnt == 11){
 		         TEST_OK(pledge_arrived(registrar_code, &registrar_response));	
 /* test returned voucher  */		                      	      		                  	            		      
@@ -1134,14 +1143,68 @@ main(int argc, char **argv) {
 		     else if (cnt == 11){
 				 TEST_OK(test_enroll_certificate( client, COAP_MEDIATYPE_TEXT_PLAIN, 10));
 			 }
-			 else {
-/* conclude with /.well-known/est/crts    */
+			 if (cnt > 11) {
+/* conclude with invalid pledge certificates   */
+   fprintf(stderr, "\nTEST wrong Pledge certificates \n\n");
 				 testing = CLOSE;
-				 TEST_OK( test_get_certificate( client));
-			 }
-			 break;
+				 pledge_comb = nokey;  /* no key included  */
+				 fprintf(stderr,"No key included in comb file \n");
+				 TEST_NOK(test_voucher_request( client, register_cert, pledge_comb, 10)); 
+				 fprintf(stderr,"No certificate included in comb file \n");
+				 pledge_comb = nocrt;  /* no certificate included  */
+				 TEST_NOK(test_voucher_request( client, register_cert, pledge_comb, 10)); 
+		         fprintf(stderr,"NO ES256 key used in certificate \n");
+		         Clean_client_request();
+	             client = client_request_init();
+                 server = client_request_init();  /* not needed */  		
+		         pledge_comb = noES256;  /* ED25519 not supported crypto algo */
+		         set_certificates( client, pledge_comb, ca);
+                 ok = pledge_get_contexts(client, server, addr_str, port_str);
+                 if (ok == 1) return -1;
+                 set_host( client, &new_host);
+                 set_port( client, tmp_port);      		
+		         ok = test_connect_pledge( client); /* make DTLS connection */                        
+				 TEST_NOK(test_voucher_request( client, register_cert, pledge_comb, 10));
+				 cnt = 0;
+			 }   
+             else break;
 		   case CLOSE:
-		     TEST_OK(pledge_arrived(registrar_code, &registrar_response));
+		   /* make new dtls connections with new connection files  */
+		     cnt++;
+		     if (cnt < 6)TEST_NOK(pledge_arrived(registrar_code, &registrar_response));
+		     if (cnt == 1) {
+				 Clean_client_request();
+				 pledge_comb = wr_issuer;  /* wrong issuer: Registrar */
+				 fprintf(stderr,"Certificate is issued by Registrar     .................");
+			 }
+		     if (cnt == 2) {
+				 Clean_client_request();
+				 pledge_comb = wr_url;  /* wrong MASAurl */
+				 fprintf(stderr,"Certificate contains unknown MASAurl    .................");
+			 }
+		     if (cnt == 3) {
+                 Clean_client_request(); 				 
+				 pledge_comb = no_url;  /* no MASAurl    */
+				 fprintf(stderr,"Certificate does not contain MASAurl    ................");
+			 }
+		     if (cnt == 4) {
+                 Clean_client_request(); 				 
+				 pledge_comb = wr_valid;  /* no valid expiration date    */
+				 fprintf(stderr,"Certificate has invalid expiration date ..................");
+			 }			 
+		     if (cnt > 4) goto exit;
+		     client = client_request_init();
+             server = client_request_init();  /* not needed */  
+		     set_certificates( client, pledge_comb, ca);
+		     set_certificates( server, pledge_comb, ca);	     
+             ok = pledge_get_contexts(client, server, addr_str, port_str);
+             if (ok == 1) return -1;
+             set_host( client, &new_host);
+             set_port( client, tmp_port);
+		     fprintf(stderr,"make new DTLS connection \n");
+		     ok = test_connect_pledge( client); /* make DTLS connection */                        	    		     
+		     TEST_OK(test_voucher_request( client, register_cert, pledge_comb, 10)); 
+		     break;
 		   default:
 		      goto exit;            	            
         }  /* switch */
@@ -1185,6 +1248,7 @@ main(int argc, char **argv) {
 exit:
   if (request_voucher.s != NULL)coap_free(request_voucher.s);
   if( registrar_response.s != NULL) coap_free(registrar_response.s);
+  coap_free(new_host.s);
   Clean_client_request();
   fprintf(stderr,"end of client: coap_malloc loss is %d  \n", (int)coap_nr_of_alloc());                                                  
 }

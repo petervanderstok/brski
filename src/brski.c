@@ -555,15 +555,14 @@ exit:
 } 
 
 int8_t
-brksi_make_signed_rv(coap_string_t *payload, coap_string_t *request_voucher, char *file_name){
+brksi_make_signed_rv(coap_string_t *payload, coap_string_t *request_voucher, char *registrar_file, char *pledge_comb){
    if ((request_voucher == NULL) || (payload == NULL)) return 1;
    mbedtls_x509_crt registrar_crt;
    mbedtls_x509_crt_init( &registrar_crt);
    int8_t   ok = 0;
    /* fill regis_crt with registrar certificate needed in request_voucher */
    coap_string_t regis_crt = {.length = 0, .s = NULL};
-   CHECK( mbedtls_x509_crt_parse_file( &registrar_crt, file_name ) );
- 
+   CHECK( mbedtls_x509_crt_parse_file( &registrar_crt, registrar_file ) );
    mbedtls_x509_buf *der = &registrar_crt.raw;
    unsigned char *ptr = der->p;
    size_t raw_len = der->len;
@@ -572,20 +571,17 @@ brksi_make_signed_rv(coap_string_t *payload, coap_string_t *request_voucher, cha
    memcpy(regis_crt.s, ptr, raw_len);  
   /* regis_crt contains certificate in der from file SERVER_DER  */ 
    if (JSON_set() == JSON_ON){    
-            ok = brski_json_voucherrequest(request_voucher, &regis_crt);
+            ok = brski_json_voucherrequest(request_voucher, &regis_crt, pledge_comb);
    } else 
-            ok = brski_cbor_voucherrequest(request_voucher, &regis_crt);   
+            ok = brski_cbor_voucherrequest(request_voucher, &regis_crt, pledge_comb);   
    if (ok != 0){
       coap_log(LOG_ERR, "voucher request is not generated \n");
       goto exit;
-   }  
-   char key_file[]  = PLEDGE_KEY;
-   char cert_file[] = PLEDGE_CRT;
-   char comb_file[] = PLEDGE_COMB;
+   }
    if (JSON_set() == JSON_ON){
-	  ok = brski_cms_sign_payload(payload, request_voucher, comb_file );
+	  ok = brski_cms_sign_payload(payload, request_voucher, pledge_comb );
    } else{
-      ok = brski_cose_sign_payload(payload, request_voucher, key_file, cert_file );
+      ok = brski_cose_sign_payload(payload, request_voucher, pledge_comb );
    }
 
  exit:  
@@ -892,14 +888,36 @@ brski_cbor_voucherstatus(coap_string_t *status){
 	return 0;
 }
 
+/* verify_cert_date
+ * verifies validity of certificate dates 
+ * returns 1 when not valid, else returns 0
+ */
+static uint8_t
+verify_cert_date( mbedtls_x509_crt *crt, mbedtls_x509_crt *ca){
+  uint32_t flags;	
+  int ret = mbedtls_x509_crt_verify( crt, ca, NULL, NULL, &flags, NULL, NULL );
+  if( ret != 0 ){
+	 char txt_buf[512];
+     if( ret == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED ){
+        mbedtls_x509_crt_verify_info( txt_buf, sizeof( txt_buf ), "  ! ", flags );
+        coap_log( LOG_ERR,"%s\n", txt_buf );
+     } else {
+        mbedtls_strerror( ret, txt_buf, sizeof( txt_buf) );
+        coap_log(LOG_ERR, "%s \n", txt_buf);
+     }
+     return 1;
+  }
+  return 0;
+}
+
+
 /* brski_json_voucherrequest
  * returns the payload for voucherrequest
  * certificate parameter contains the registrar certificate in der
  */
 int8_t
-brski_json_voucherrequest(coap_string_t *voucherrequest, coap_string_t *certificate){
+brski_json_voucherrequest(coap_string_t *voucherrequest, coap_string_t *certificate, char *pledge_file){
    if ((voucherrequest == NULL) ||(certificate == NULL))return 1;
-   const char pledge_crt_name[] = PLEDGE_CRT;         /* filename for the pledge crt file */
    mbedtls_x509_crt               pledge_crt;
    mbedtls_x509_crt               input_crt;   
    char    *serial = NULL;
@@ -917,7 +935,7 @@ brski_json_voucherrequest(coap_string_t *voucherrequest, coap_string_t *certific
 /* check input certificate */
    CHECK(mbedtls_x509_crt_parse_der( &input_crt, certificate->s, certificate->length ));   
 /* read pledge certificate and find serial number*/   
-   CHECK(mbedtls_x509_crt_parse_file( &pledge_crt, pledge_crt_name ) );
+   CHECK(mbedtls_x509_crt_parse_file( &pledge_crt, pledge_file ) );
    return_subject_sn(&(pledge_crt.subject), &serial, &serial_len);
 
    /* define createdon, expireson  and noce*/
@@ -977,9 +995,8 @@ exit:
  * certificate parameter contains the registrar certificate in der
  */
 int8_t
-brski_cbor_voucherrequest(coap_string_t *voucherrequest, coap_string_t *certificate){
+brski_cbor_voucherrequest(coap_string_t *voucherrequest, coap_string_t *certificate, char *pledge_file){
    if ((voucherrequest == NULL) ||(certificate == NULL))return 1;
-   const char pledge_crt_name[] = PLEDGE_CRT;         /* filename for the pledge crt file */
    mbedtls_x509_crt               pledge_crt;
    mbedtls_x509_crt               input_crt;
    char    *serial = NULL;
@@ -997,7 +1014,7 @@ brski_cbor_voucherrequest(coap_string_t *voucherrequest, coap_string_t *certific
 /* check input certificate */
    CHECK(mbedtls_x509_crt_parse_der( &input_crt, certificate->s, certificate->length ));
 /* read pledge certificate and find serial number*/
-   CHECK(mbedtls_x509_crt_parse_file( &pledge_crt, pledge_crt_name ) );
+   CHECK(mbedtls_x509_crt_parse_file( &pledge_crt, pledge_file ) );
    return_subject_sn(&(pledge_crt.subject), &serial, &serial_len);
    /* define createdon, expireson and nonce */	
     time_t rawtime;
@@ -1440,7 +1457,7 @@ sign_sig_structure(mbedtls_ecdsa_context *key, int cose_alg, coap_string_t *tobe
     fprintf(stderr,"hash value is \n");
     for (uint qq = 0; qq < HASH256_BYTES; qq++)fprintf(stderr," %02x",hash[qq]);
     fprintf(stderr,"\n");
-*/  
+ */ 
     size_t asn_len = MBEDTLS_ECDSA_MAX_LEN;
     unsigned char asn_sig[MBEDTLS_ECDSA_MAX_LEN];
 	CHECK(mbedtls_ecdsa_write_signature( key, MBEDTLS_MD_SHA256, hash, sizeof(hash), asn_sig, &asn_len,
@@ -1449,14 +1466,23 @@ sign_sig_structure(mbedtls_ecdsa_context *key, int cose_alg, coap_string_t *tobe
     fprintf(stderr,"generated asn signature with length %d \n",(int)asn_len);
     for (uint qq =0 ; qq < asn_len; qq++)fprintf(stderr," %02x", asn_sig[qq]);
     fprintf(stderr,"\n");
- */  
+  */  
     extract_asn_signature(asn_sig, asn_sig + asn_len, signature);
     *sig_len = 64;
-/*   
+ /*  
     fprintf(stderr,"extracted signature with length %d \n",(int)*sig_len);
     for (uint qq =0 ; qq < *sig_len; qq++)fprintf(stderr," %02x", signature[qq]);
     fprintf(stderr,"\n");
- */  
+  */ 
+  /* 
+    unsigned char asn_signature[MBEDTLS_ECDSA_MAX_LEN]; 
+    memset(asn_signature,0,MBEDTLS_ECDSA_MAX_LEN);
+    create_asn_signature(signature, asn_signature, &asn_len); 
+    
+    CHECK(mbedtls_ecdsa_read_signature( key , hash, sizeof(hash),
+                           asn_signature, asn_len));
+     fprintf(stderr,"signed and verified ok \n");
+     * */                      
     ok = 0;
 exit:
     coap_free(Sig_structure);
@@ -1474,7 +1500,7 @@ exit:
  */
 int8_t
 brski_cose_sign_payload(coap_string_t *signedpl, coap_string_t *tobesignedpl, 
-           char *key_name, char *cert_name){
+            char *comb_name){
     if ((signedpl == NULL) || (tobesignedpl == NULL))return 1;
     int8_t   ok = 1;  /* error */
     int     cose_alg = 0;  /* type of cose alg  */
@@ -1487,8 +1513,8 @@ brski_cose_sign_payload(coap_string_t *signedpl, coap_string_t *tobesignedpl,
 	unsigned char signature[MBEDTLS_ECDSA_MAX_LEN];
 	size_t   sig_len = 0;
     /* load keys of pledge certificate  */
-    coap_log(LOG_INFO,"parse key file with name : %s \n", key_name);    
-    CHECK(mbedtls_pk_parse_keyfile( key, key_name, pledge_pwd ));
+    coap_log(LOG_INFO,"parse key file with name : %s \n", comb_name);    
+    CHECK(mbedtls_pk_parse_keyfile( key, comb_name, pledge_pwd ));
     /* determine cose algorithm in alg  */
     mbedtls_pk_type_t  alg = mbedtls_pk_get_type(key );
     mbedtls_ecp_keypair *key_pair = key->pk_ctx;
@@ -1502,7 +1528,7 @@ brski_cose_sign_payload(coap_string_t *signedpl, coap_string_t *tobesignedpl,
 	ok = create_pubkey_hash(key_pair, key_hash);
     if (ok ==1 )goto exit;
     coap_string_t cert_raw = {.length =0, .s = NULL};
-    ok = create_x5bag(&cert_raw, cert_name);
+    ok = create_x5bag(&cert_raw, comb_name);
     if (ok== 1)goto exit;
     ok = sign_sig_structure(key_pair, cose_alg, tobesignedpl, signature, &sig_len, &cert_raw);
 	if (ok == 1)goto exit;
@@ -2062,7 +2088,7 @@ brski_check_pledge_request(voucher_t *req_contents){
    coap_string_t signed_document = { .length = req_contents->prior_signed_len, .s = req_contents->prior_signed};
    coap_string_t *pledge_request = NULL;
    if (JSON_set() == JSON_OFF){
-        pledge_request = brski_verify_cose_signature(&signed_document, pledge_crt_name);
+        pledge_request = brski_verify_cose_signature(&signed_document, pledge_crt_name, ca_name);
    } else { 
         pledge_request = brski_verify_cms_signature(&signed_document, pledge_crt_name, ca_name);
    }
@@ -2289,21 +2315,22 @@ brski_check_signature(char *cert_file_name, uint8_t *prot_buf, uint8_t *sig_buf,
     nr += cbor_put_bytes(&buf, NULL, 0);    
     nr += cbor_put_bytes( &buf, document->s, document->length);
     assert(nr < struct_len);
-/*    
+ /*   
     fprintf(stderr,"structure to be verified :\n");
     for (uint qq = 0; qq < nr; qq++)fprintf(stderr," %02x",Sig_structure[qq]);
     fprintf(stderr,"\n");
- */   
+*/   
     CHECK(mbedtls_sha256_ret( Sig_structure, nr, hash, 0 ) );
-    CHECK(mbedtls_x509_crt_parse_file( &crt, cert_file_name));  
-/*    fprintf(stderr,"verify_cose_signature with %s \n", cert_file_name);  
+    CHECK(mbedtls_x509_crt_parse_file( &crt, cert_file_name)); 
+/*     
+    fprintf(stderr,"verify_cose_signature with %s \n", cert_file_name);  
     fprintf(stderr,"hash is \n");
     for (uint qq = 0; qq < HASH256_BYTES; qq++) fprintf(stderr," %02x",hash[qq]);
     fprintf(stderr,"\n");     
     fprintf(stderr,"signature is with length %d\n", (int)signature_len);
     for (uint qq = 0; qq < signature_len; qq++) fprintf(stderr," %02x",signature[qq]);
     fprintf(stderr,"\n"); 
- */  
+ */ 
     /* convert 64 bit signature to asn signature */
     unsigned char asn_signature[MBEDTLS_ECDSA_MAX_LEN]; 
     size_t asn_len = 0;
@@ -2425,7 +2452,7 @@ brski_verify_cms_signature(coap_string_t *signed_document, char *ca_name, char *
  * ok returns document else returns NULL
  */
 coap_string_t *
-brski_verify_cose_signature(coap_string_t *signed_document, char *cert_file_name){
+brski_verify_cose_signature(coap_string_t *signed_document, char *cert_file_name, char *ca_file_name){
     coap_string_t *document = NULL;
     if(signed_document == NULL) return NULL;
     uint8_t *signature = NULL;
@@ -2435,12 +2462,20 @@ brski_verify_cose_signature(coap_string_t *signed_document, char *cert_file_name
     mbedtls_ctr_drbg_init( &ctr_drbg ); 
     mbedtls_x509_crt        crt;
     mbedtls_x509_crt_init(&crt);   
+    mbedtls_x509_crt        ca;
+    mbedtls_x509_crt_init(&ca);   
     int8_t ok = 0;
 	   /* load public key of pledge certificate  */
     mbedtls_pk_context  my_key;
     mbedtls_pk_context *key = &my_key;
     mbedtls_pk_init( key);
     CHECK(mbedtls_x509_crt_parse_file( &crt, cert_file_name));
+    CHECK(mbedtls_x509_crt_parse_file( &ca, ca_file_name));   
+    ok = verify_cert_date( &crt, &ca);
+    if (ok != 0){
+		coap_log(LOG_ERR,"Certificate %s is not valid \n", cert_file_name);
+		goto exit;
+	}
     key = &crt.pk;
     mbedtls_ecp_keypair *key_pair = key->pk_ctx;
 /* get public key for eventual debugging */
@@ -2501,6 +2536,7 @@ exit:
       }
       mbedtls_ctr_drbg_free( &ctr_drbg );               
       mbedtls_x509_crt_free( &crt);
+      mbedtls_x509_crt_free( &ca);
       mbedtls_pk_free(key);
     } /* if elem = */
     return document;

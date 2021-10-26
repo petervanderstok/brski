@@ -962,9 +962,11 @@ pledge_voucher_request(client_request_t *client){
   if (masa_voucher.s != NULL) coap_free(masa_voucher.s);
   masa_voucher.s = NULL;
   masa_code = 0;
-  char cpc[] = PLEDGE_SERVER_DER;    /* contains registrar certificate in DER */
-  char *file_name = cpc;
-  int8_t ok = brksi_make_signed_rv(&signed_request_voucher, &request_voucher, file_name);
+  char cpc[]           = PLEDGE_COMB;          /* contains pledge certificate and private key */
+  char psd[]           = PLEDGE_SERVER_DER;    /* contains registrar certificate in DER */
+  char *registrar_file = psd;
+  char *pledge_comb    = cpc;
+  int8_t ok = brksi_make_signed_rv(&signed_request_voucher, &request_voucher, registrar_file, pledge_comb);
   set_payload(client, &signed_request_voucher);
   if (ok != 0) return 1;
   if (JSON_set() == 1)
@@ -989,7 +991,7 @@ pledge_status_voucher(client_request_t *client){
   }
   coap_string_t *voucher = NULL;
   if (JSON_set() == JSON_OFF)
-      voucher = brski_verify_cose_signature(&masa_voucher, masa_cert_name);
+      voucher = brski_verify_cose_signature(&masa_voucher, masa_cert_name, ca_name);
   else
       voucher = brski_verify_cms_signature(&masa_voucher, ca_name, masa_cert_name);
   if (voucher == NULL){

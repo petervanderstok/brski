@@ -1101,7 +1101,6 @@ static  status_t *
 find_status_request(voucher_t *request){
 	status_t *status = STATUS;
 	while (status != NULL){
-		fprintf(stderr,"find_status_request status %p \n", (void *)status);
 		if (request->domainid_len == status->domainid_len){
 			if (memcmp(status->domainid, request->domainid, status->domainid_len) == 0)
 			      return status;
@@ -1143,6 +1142,7 @@ insert_status(voucher_t *voucher_request, coap_string_t *request_voucher, coap_s
       status->request_voucher = coap_malloc(request_voucher->length);
       status->rv_len = request_voucher->length;
 	  memcpy(status->request_voucher, request_voucher->s, request_voucher->length);
+	  status->json_cbor = JSON_set();
     }
 	status->acceptable = VOUCHER_ACCEPTABLE;   /* assume it is OK  */
 	if (voucher_request->domainid_len > 0){
@@ -1310,7 +1310,6 @@ call_http_MASA(coap_string_t *payload, coap_string_t *resource, coap_string_t *h
      * 1. Start the connection
      */
      create_port(host_name, &port_name);
-
     if( ( ret = mbedtls_net_connect( &server_fd, (char *)host_name->s,
                                          (char *)port_name.s, MBEDTLS_NET_PROTO_TCP ) ) != 0 )
     {
@@ -1381,9 +1380,7 @@ call_http_MASA(coap_string_t *payload, coap_string_t *resource, coap_string_t *h
     if( ( flags = mbedtls_ssl_get_verify_result( &ssl ) ) != 0 )
     {
         char vrfy_buf[512];
-
         mbedtls_x509_crt_verify_info( vrfy_buf, sizeof( vrfy_buf ), "  Server certificate :  ", flags );
-
         coap_log(LOG_WARNING, "%s\n", vrfy_buf );
     }
     /*
@@ -1546,10 +1543,13 @@ call_MASA_ra(status_t *status, coap_string_t *answer, char *file_name){
 	  coap_log(LOG_ERR, "no MASAurlextension found \n");
 	  return 400;
     }
+    if (status->json_cbor != JSON_set()){
+		coap_log(LOG_ERR, "stored status uses different cbor/json format \n");
+		return 400;
+	}
     coap_string_t payload = { .length = status->rv_len, .s = status->request_voucher};
     size_t resource_size = sizeof(POST_REQUEST_RA) + sizeof(HOST) + MASA_url.length + sizeof(ACCEPT_COSE_CBOR) + 
-                                  sizeof(COSE_CBOR) + sizeof(CONTENT_LENGTH)+ sizeof(STARTPL) + 10; /* leaves few bytes for length  */
-                                  
+                                  sizeof(COSE_CBOR) + sizeof(CONTENT_LENGTH)+ sizeof(STARTPL) + 10; /* leaves few bytes for length  */                         
     coap_string_t resource = {.length =  resource_size, .s = NULL};	
     resource.s = coap_malloc(resource_size);
     memcpy(resource.s, POST_REQUEST_RA, sizeof(POST_REQUEST_RA)-1);
@@ -1648,7 +1648,7 @@ call_MASA_ra(status_t *status, coap_string_t *answer, char *file_name){
     resource.length = offset; 
     if (offset < resource_size){     
 	       ok = call_http_MASA(masa_request, &resource, &MASA_url, masa_voucher);
-	   }
+	}
 	else ok = 400;	 	
 	if (MASA_url.s != NULL)coap_free(MASA_url.s);
 	if (resource.s != NULL)coap_free(resource.s); 
@@ -1697,8 +1697,6 @@ RG_hnd_post_vs(coap_context_t *ctx,
   if (RG_ret_data.s != NULL) coap_free(RG_ret_data.s);
   RG_ret_data.s = NULL;
   RG_ret_data.length = 0; 
-int start_loss = coap_nr_of_alloc(); 
-  fprintf(stderr,"Enter  /est/vs with loss %d \n",start_loss);
   if ((size < 1) | (data == NULL)){
 	  brski_error_return(COAP_RESPONSE_CODE(400), 
       response, "log did not arrive\n");
@@ -1736,7 +1734,6 @@ int start_loss = coap_nr_of_alloc();
       response, "log cannot be parsed \n");
 	  return;
   }
-  fprintf(stderr,"after readstatus /est/vs allocated: %d \n", (int)coap_nr_of_alloc()); 
   if (status->acceptable != VOUCHER_ACCEPTABLE){
 	  brski_error_return(COAP_RESPONSE_CODE(404), 
       response, "voucher is not acceptable\n");
@@ -1747,17 +1744,15 @@ int start_loss = coap_nr_of_alloc();
   if (tid == COAP_INVALID_TID)
             coap_log(LOG_DEBUG, "message_handler: error sending intermediate acknowledgement\n");
   /* invoke MASA */
-  fprintf(stderr,"before call_MASA_ra /est/vs allocated: %d \n", (int)coap_nr_of_alloc());   
   int16_t http_resp = call_MASA_ra( status, &RG_ret_data, file_name);
   if (http_resp > 299){
-	  brski_error_return(COAP_RESPONSE_CODE(http_resp),response, "call_MASA_ra returned error");
+	  brski_error_return(COAP_RESPONSE_CODE(http_resp),response, "call_MASA_ra returned error\n");
 	  return;
   }
-  fprintf(stderr,"after call_MASA_ra /est/vs allocated: %d \n", (int)coap_nr_of_alloc()); 
   coap_add_data_blocked_response(resource, session, request, response, token,
                                  content_format, -1,
                                  RG_ret_data.length, RG_ret_data.s);  
-  fprintf(stderr,"end /est/vs: coap_nr_alloc is %d        difference is %d \n", (int)coap_nr_of_alloc(), (int)coap_nr_of_alloc() - start_loss);                                 
+  fprintf(stderr,"end /est/vs: coap_nr_alloc is %d  \n", (int)coap_nr_of_alloc());                                 
 }
 
 /*
@@ -1793,8 +1788,6 @@ RG_hnd_get_es(coap_context_t *ctx UNUSED_PARAM,
   if (RG_ret_data.s != NULL) coap_free(RG_ret_data.s);
   RG_ret_data.s = NULL;
   RG_ret_data.length = 0;   
-int start_loss = coap_nr_of_alloc(); 
-  fprintf(stderr,"Enter  /est/es with loss %d \n",start_loss); 
   response->code = COAP_RESPONSE_CODE(205); 
   int8_t ok = brski_cbor_voucherstatus(&RG_ret_data);
   if (ok != 0){
@@ -1803,7 +1796,7 @@ int start_loss = coap_nr_of_alloc();
 	  return;
   }
   response->code = COAP_RESPONSE_CODE(203);   
-  fprintf(stderr,"end est/es: coap_nr_alloc is %d        difference is %d \n", (int)coap_nr_of_alloc(), (int)coap_nr_of_alloc() - start_loss);  
+  fprintf(stderr,"end est/es: coap_nr_alloc is %d  \n", (int)coap_nr_of_alloc());  
 }
 
 /*
@@ -1845,10 +1838,6 @@ RG_hnd_post_rv(coap_context_t *ctx,
   if (RG_ret_data.s != NULL) coap_free(RG_ret_data.s);
   RG_ret_data.s = NULL;
   RG_ret_data.length = 0; 
-int start_loss = coap_nr_of_alloc();
-  fprintf(stderr,"Enter  /est/rv with loss %d \n",start_loss);
-  char key_file[] = REGIS_SRV_KEY;
-  char cert_file[] = REGIS_SRV_CRT;
   char comb_file[] = REGIS_SRV_COMB;  
   if ((data == NULL) || (size == 0)){
 	  brski_error_return(COAP_RESPONSE_CODE(404), 
@@ -1869,7 +1858,7 @@ int start_loss = coap_nr_of_alloc();
   if (fm_value != NULL)content_format = (fm_value[0]<<8) + fm_value[1];
   if (content_format == COAP_MEDIATYPE_APPLICATION_VOUCHER_COSE_CBOR){
 	  /* signed voucher_request  */
-	  voucher_request = brski_verify_cose_signature(&signed_voucher_request, file_name);
+	  voucher_request = brski_verify_cose_signature(&signed_voucher_request, file_name, ca_name);
   } else if (content_format == COAP_MEDIATYPE_APPLICATION_VOUCHER_CMS_JSON){
 	  /* signed voucher_request  */
 	  voucher_request = brski_verify_cms_signature(&signed_voucher_request, ca_name, file_name);  
@@ -1916,8 +1905,7 @@ int start_loss = coap_nr_of_alloc();
   else insert_status(req_contents, voucher_request, session);
   if ((voucher_request->s != NULL) && (voucher_request->s != data))coap_free(voucher_request->s);
   coap_free(voucher_request);
-  coap_string_t masa_request= {.s = NULL, .length = 0};
-//  fprintf(stderr,"After insert status  /est/rv with loss %d \n",(int)coap_nr_of_alloc());  
+  coap_string_t masa_request= {.s = NULL, .length = 0}; 
   int8_t ok = 0;
   if (content_format == COAP_MEDIATYPE_APPLICATION_VOUCHER_CMS_JSON)
       ok = brski_create_json_masa_request(&masa_request, req_contents, &signed_voucher_request, file_name);
@@ -1930,8 +1918,7 @@ int start_loss = coap_nr_of_alloc();
       brski_error_return(COAP_RESPONSE_CODE(406), 
               response, "MASA voucher_request cannot be generated\n");
 	  return;
-  }
-//  fprintf(stderr,"After create masa request  /est/rv with loss %d \n",(int)coap_nr_of_alloc());  
+  } 
   coap_string_t masa_request_sign= {.s = NULL, .length = 0};
   if (content_format == COAP_MEDIATYPE_APPLICATION_VOUCHER_CMS_JSON){
       ok = brski_cms_sign_payload(&masa_request_sign, &masa_request, comb_file );
@@ -1942,11 +1929,10 @@ int start_loss = coap_nr_of_alloc();
       fprintf(stderr,"\n\n");
       * */
   } else if (content_format == COAP_MEDIATYPE_APPLICATION_VOUCHER_COSE_CBOR){
-      ok = brski_cose_sign_payload(&masa_request_sign, &masa_request, key_file, cert_file );
+      ok = brski_cose_sign_payload(&masa_request_sign, &masa_request, comb_file);
       set_JSON(JSON_OFF);
   }
   coap_free(masa_request.s);
-//  fprintf(stderr,"After sign payload  /est/rv with loss %d \n",(int)coap_nr_of_alloc());  
   if (ok != 0){
 	 brski_error_return(COAP_RESPONSE_CODE(406), 
               response, "cannot sign masa voucher_request\n");
@@ -1962,15 +1948,14 @@ int start_loss = coap_nr_of_alloc();
   int16_t http_resp = call_MASA_rv(&masa_request_sign, &RG_ret_data, file_name);
   if (http_resp > 299){
 	  coap_free(masa_request_sign.s);
-	  brski_error_return(COAP_RESPONSE_CODE(http_resp),response, "call_MASA_rv returned error");
+	  brski_error_return(COAP_RESPONSE_CODE(http_resp),response, "call_MASA_rv returned error\n");
 	  return;
-  }
-//  fprintf(stderr,"After call_MASA_rv  /est/rv with loss %d \n",(int)coap_nr_of_alloc());    
+  }   
   coap_free(masa_request_sign.s);
   coap_add_data_blocked_response(resource, session, request, response, token,
                                  content_format, -1,
                                  RG_ret_data.length, RG_ret_data.s);
-   fprintf(stderr,"end /est/rv: coap_nr_alloc is %d        difference is %d \n", (int)coap_nr_of_alloc(), (int)coap_nr_of_alloc() - start_loss);
+   fprintf(stderr,"end /est/rv: coap_nr_alloc is %d   \n", (int)coap_nr_of_alloc());
 }
 
 /*
@@ -2006,8 +1991,6 @@ RG_hnd_get_crts(coap_context_t *ctx UNUSED_PARAM,
   if (RG_ret_data.s != NULL) coap_free(RG_ret_data.s);
   RG_ret_data.s = NULL;
   RG_ret_data.length = 0; 
-int start_loss = coap_nr_of_alloc();
-  fprintf(stderr,"Enter  /est/crts with loss %d \n",start_loss);
   response->code = COAP_RESPONSE_CODE(205); 
  
   int ok = brski_return_certificate(&RG_ret_data);
@@ -2019,7 +2002,7 @@ int start_loss = coap_nr_of_alloc();
   coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_PKCS7_CERTS, -1,
                                  RG_ret_data.length, RG_ret_data.s); 
-  fprintf(stderr,"end est.crts: coap_nr_alloc is %d        difference is %d \n", (int)coap_nr_of_alloc(), (int)coap_nr_of_alloc() - start_loss);                                                            
+  fprintf(stderr,"end est.crts: coap_nr_alloc is %d \n", (int)coap_nr_of_alloc());                                                            
 }
 
 /*
@@ -2058,8 +2041,6 @@ RG_hnd_post_sen(coap_context_t *ctx UNUSED_PARAM,
   if (RG_ret_data.s != NULL) coap_free(RG_ret_data.s);
   RG_ret_data.s = NULL;
   RG_ret_data.length = 0; 
-int start_loss = coap_nr_of_alloc(); 
-  fprintf(stderr,"Enter  /est/sen with loss %d \n",start_loss); 
   if ((data == NULL) | (size == 0)){
 	  brski_error_return(COAP_RESPONSE_CODE(400), 
       response, "Did not find request data\n");
@@ -2099,7 +2080,7 @@ int start_loss = coap_nr_of_alloc();
   coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_PKCS7_CERTS, -1,
                                  RG_ret_data.length, RG_ret_data.s); 
-  fprintf(stderr,"end /est/sen: coap_nr_alloc is %d        difference is %d \n", (int)coap_nr_of_alloc(), (int)coap_nr_of_alloc() - start_loss);                                                             
+  fprintf(stderr,"end /est/sen: coap_nr_alloc is %d  \n", (int)coap_nr_of_alloc());                                                             
 }
 
 /*
@@ -2135,8 +2116,6 @@ RG_hnd_post_sren(coap_context_t *ctx UNUSED_PARAM,
   if (RG_ret_data.s != NULL) coap_free(RG_ret_data.s);
   RG_ret_data.s = NULL;
   RG_ret_data.length = 0; 
-int start_loss = coap_nr_of_alloc(); 
-  fprintf(stderr,"Enter  /est/sren with loss %d \n",start_loss); 
   if ((data == NULL) | (size == 0)){
 	  brski_error_return(COAP_RESPONSE_CODE(400), 
       response, "Did not find request data\n");
@@ -2160,7 +2139,7 @@ int start_loss = coap_nr_of_alloc();
   coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_PKCS7_CERTS, -1,
                                  RG_ret_data.length, RG_ret_data.s);
-   fprintf(stderr,"End /est/sren: coap_nr_alloc is %d        difference is %d \n", (int)coap_nr_of_alloc(), (int)coap_nr_of_alloc() - start_loss);                                  
+   fprintf(stderr,"End /est/sren: coap_nr_alloc is %d  \n", (int)coap_nr_of_alloc());                                  
 }
 
 /*
@@ -2200,8 +2179,6 @@ RG_hnd_post_skg(coap_context_t *ctx UNUSED_PARAM,
   if (RG_ret_data.s != NULL) coap_free(RG_ret_data.s);
   RG_ret_data.s = NULL;
   RG_ret_data.length = 0;  
-int start_loss = coap_nr_of_alloc();  
-  fprintf(stderr,"Enter  /est/skg with loss %d \n",start_loss); 
   if ((data == NULL) | (size == 0)){
 	  brski_error_return(COAP_RESPONSE_CODE(400), 
       response, "Did not find request data\n");
@@ -2240,7 +2217,7 @@ int start_loss = coap_nr_of_alloc();
   coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_MULTIPART_CORE, -1,
                                  RG_ret_data.length, RG_ret_data.s);
-  fprintf(stderr,"End /est/skg: coap_nr_alloc is %d        difference is %d \n", (int)coap_nr_of_alloc(), (int)coap_nr_of_alloc() - start_loss);                                
+  fprintf(stderr,"End /est/skg: coap_nr_alloc is %d  \n", (int)coap_nr_of_alloc());                                
 }
 
 /*
@@ -2276,8 +2253,6 @@ RG_hnd_get_att(coap_context_t *ctx UNUSED_PARAM,
   if (RG_ret_data.s != NULL) coap_free(RG_ret_data.s);
   RG_ret_data.s = NULL;
   RG_ret_data.length = 0; 
-int start_loss = coap_nr_of_alloc(); 
-  fprintf(stderr,"Enter  /est/at with loss %d \n",start_loss);   
   response->code = COAP_RESPONSE_CODE(205); 
   char file[] = CSR_ATTRIBUTES;
   RG_ret_data.s = read_file_mem(file, &RG_ret_data.length); 
@@ -2286,7 +2261,7 @@ int start_loss = coap_nr_of_alloc();
   coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_CSRATTRS, -1,
                                  RG_ret_data.length, RG_ret_data.s);
-  fprintf(stderr,"End /est/att: coap_nr_alloc is %d        difference is %d \n", (int)coap_nr_of_alloc(), (int)coap_nr_of_alloc() - start_loss);                                
+  fprintf(stderr,"End /est/att: coap_nr_alloc is %d \n", (int)coap_nr_of_alloc());                                
 }
 
 
@@ -2326,13 +2301,12 @@ RG_hnd_proxy(coap_context_t *ctx UNUSED_PARAM,
   /* RG_ret_data has been used for blocked response => can be liberated for new request */
   if (RG_ret_data.s != NULL) coap_free(RG_ret_data.s);
   RG_ret_data.s = NULL;
-  RG_ret_data.length = 0; 
-int start_loss = coap_nr_of_alloc();    
+  RG_ret_data.length = 0;    
   response->code = COAP_RESPONSE_CODE(201);  
   coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_CSRATTRS, -1,
                                  data_len, resp_data); 
-  fprintf(stderr,"coap_nr_alloc is %d        difference is %d \n", (int)coap_nr_of_alloc(), (int)coap_nr_of_alloc() - start_loss);                                                               
+  fprintf(stderr,"coap_nr_alloc is %d  \n", (int)coap_nr_of_alloc());                                                               
 }
 
 static int

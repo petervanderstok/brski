@@ -348,6 +348,7 @@ void
 MS_hnd_post_rv(coap_string_t *signed_voucher_request, uint16_t ct,
                    coap_string_t *signed_voucher)
 {
+	fprintf(stderr," Start /est/rv in MASA \n");
   coap_string_t *voucher_request = NULL;
   char cpc[] = MASA_CLIENT_DER;  /* request is signed by registrar  */
   char *file_name = cpc;
@@ -355,7 +356,7 @@ MS_hnd_post_rv(coap_string_t *signed_voucher_request, uint16_t ct,
   voucher_t *req_contents = NULL;
   if (ct == COAP_MEDIATYPE_APPLICATION_VOUCHER_COSE_CBOR){
 	  /* cose signed voucher_request  */  
-	  voucher_request = brski_verify_cose_signature(signed_voucher_request, file_name);
+	  voucher_request = brski_verify_cose_signature(signed_voucher_request, file_name, ca_name);
   } else if (ct == COAP_MEDIATYPE_APPLICATION_VOUCHER_CMS_JSON){
       /* cms signed voucher_request */
       voucher_request = brski_verify_cms_signature(signed_voucher_request, ca_name, file_name);
@@ -388,8 +389,6 @@ MS_hnd_post_rv(coap_string_t *signed_voucher_request, uint16_t ct,
   }
 
   coap_string_t voucher = {.s = NULL, .length = 0};
-  char cmk[] = MASA_SRV_KEY;
-  char *key_file = cmk;
   char mkc[] = MASA_SRV_COMB;
   char *comb_file = mkc;
   if (JSON_set() == JSON_OFF)
@@ -404,10 +403,11 @@ MS_hnd_post_rv(coap_string_t *signed_voucher_request, uint16_t ct,
   }
   if (masa_debug > 0)printf("masa signs voucher with key_file %s \n", comb_file);
   if (ct == COAP_MEDIATYPE_APPLICATION_VOUCHER_COSE_CBOR)
-     ok = brski_cose_sign_payload(signed_voucher, &voucher, key_file, file_name);
+     ok = brski_cose_sign_payload(signed_voucher, &voucher, comb_file);
   else
      ok = brski_cms_sign_payload(signed_voucher, &voucher, comb_file);
   if (voucher.s != NULL)free(voucher.s);
+  fprintf(stderr,"End /est/rv \n");
   if (ok != 0){
 	 error_return(406, "cannot sign voucher\n");
 	 return; 
@@ -422,7 +422,7 @@ MS_hnd_post_rv(coap_string_t *signed_voucher_request, uint16_t ct,
 void
 MS_hnd_post_ra(coap_string_t *voucher_request, coap_string_t *log)
 {
-
+   fprintf(stderr,"Start /est/ra in MASA \n");
   /* try to find domainid in request-voucher  */
   uint8_t *domain_id = NULL;
   voucher_t *req_contents = NULL;
@@ -467,6 +467,7 @@ MS_hnd_post_ra(coap_string_t *voucher_request, coap_string_t *log)
   log->s = temp->s;
   log->length = temp->length;
   free(temp);
+  fprintf(stderr,"End /est/ra \n");
 }
 
 static void my_debug( void *ctx, int level,
