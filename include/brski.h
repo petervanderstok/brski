@@ -153,6 +153,7 @@
 /* names of derived ED25519 based certificates */
 #define PLEDGE_ED25519_CRT            "./certificates/brski/intermediate/certs/pledge_ed25519.crt"
 #define PLEDGE_ED25519_KEY            "./certificates/brski/intermediate/private/pledge_ed25519.key"
+#define PLEDGE_ED25519_COMB           "./certificates/brski/intermediate/certs/pledge_ed25519-comb.crt"
 #define REGIS_ED25519_SRV_CRT         "./certificates/brski/intermediate/certs/regis_server_ed25519.crt"
 #define REGIS_ED25519_SRV_KEY         "./certificates/brski/intermediate/private/regis_server_ed25519.key"
 #define REGIS_ED25519_SRV_COMB        "./certificates/brski/intermediate/certs/regis_server_ed25519-comb.crt"
@@ -227,6 +228,7 @@ typedef struct voucher_t{
 typedef struct status_t{
 	void            *next;
 	uint8_t         acceptable;    /* 0 is not; 1 is acceptable */
+	uint8_t         json_cbor;
 	char            *reason;
 	size_t          reason_len;
 	char            *additional_text;
@@ -275,7 +277,7 @@ int8_t
 brski_return_certificate(coap_string_t *return_crt);
 
 int8_t
-brksi_make_signed_rv(coap_string_t *payload, coap_string_t *request_voucher, char *file_name);
+brksi_make_signed_rv(coap_string_t *payload, coap_string_t *request_voucher, char *registrar_file, char *pledge_comb);
 
 int8_t
 brski_json_voucherstatus(coap_string_t *status);
@@ -290,10 +292,10 @@ voucher_t *
 brski_parse_json_voucher(coap_string_t *voucher_req);
 
 int8_t
-brski_cbor_voucherrequest(coap_string_t *voucherrequest, coap_string_t *certificate);
+brski_cbor_voucherrequest(coap_string_t *voucherrequest, coap_string_t *certificate, char *pledge_file);
 
 int8_t
-brski_json_voucherrequest(coap_string_t *voucherrequest, coap_string_t *certificate);
+brski_json_voucherrequest(coap_string_t *voucherrequest, coap_string_t *certificate, char *pledge_file);
 
 int8_t
 brski_create_cbor_voucher(coap_string_t *voucher, voucher_t *request);
@@ -302,14 +304,13 @@ int8_t
 brski_create_json_voucher(coap_string_t *voucher, voucher_t *request);
 
 int8_t
-brski_cose_sign_payload(coap_string_t *signedpl, coap_string_t *tobesignedpl, 
-           char *key_file, char *cert_name);
+brski_cose_sign_payload(coap_string_t *signedpl, coap_string_t *tobesignedpl, char *comb_name);
 
 int8_t
 brski_cms_sign_payload(coap_string_t *signedpl, coap_string_t *tobesignedpl, char *key_file );
 
 coap_string_t *
-brski_verify_cose_signature(coap_string_t *signed_document, char *cert_file_name);
+brski_verify_cose_signature(coap_string_t *signed_document, char *cert_file_name, char *ca_name);
 
 coap_string_t *
 brski_verify_cms_signature(coap_string_t *signed_document, char *ca_name, char *server_cert);
