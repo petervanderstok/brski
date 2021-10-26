@@ -126,8 +126,10 @@ new unchanged KONTIKI files are:
      *	coap-keystore.h
      *	sha256.h and -.c
 
-Security library mbedtls is interfaced with libcoap using coap_mbedtls.c
-All oscore file are currently integrated into libcoap
-The ed25519 files are to be ignored when supported by mbedtls
-CMS signing needs the openssl library
+Miscellaneous crypto info:
+
+    * Security library mbedtls is interfaced with libcoap using coap_mbedtls.c
+    * All oscore file are currently integrated into libcoap
+    * The ed25519 files are to be ignored when supported by mbedtls
+    * CMS signing needs the openssl library
 
