@@ -18,8 +18,8 @@ Instruction to setup on PC or Raspberry PI-4
 - The generated .o files will be stored under ./coap/out/.
 - The Makefile needs to be stored directly under ./coap.
 - Create directories ./coap/certificates, ./coap/certificates/brski and ./coap/certificates/conf
-- Under ./coap/certificates store brski-cert.sh and vendor-cert.sh
-- Under /.coap/certificates/conf store the openssl-masa.cnf, openssl-regis.cnf, and openssl-pledge.cnf
+- Under ./coap/certificates store brski-cert.sh, wrong_cert.sh and vendor-cert.sh
+- Under /.coap/certificates/conf store the openssl-masa.cnf, openssl-regis.cnf, openssl-pledge.cnf, and openssl_wrong.cnf
 - Run brski-certs.sh under ./coap. This should generate all certificates
 - For interop tests, run vendor-cert.sh under ./coap
 - Run make under ./coap.
@@ -37,6 +37,15 @@ Instruction to setup on PC or Raspberry PI-4
 - To see the resources of the join_proxy device under ./coap, invoke ./coap_client -m get coap://[pledge address]/.well-known/core; this will return the resources of the join_proxy device (former pledge).
 - To see the resources of the Registrar under ./coap, invoke ./coap_client -m get coap://[registrar address]/.well-known/core; this will return the resources of the Registrar.
 - To see the resources of the Registrar via the join_proxy, invoke ./coap_client -m get coaps://[join_proxy address]:5685/.well-known/core. Via this port 5685, the join_proxy directs all DTLS packets to Registrar and directs packets from registrar back to client.
+
+## test program
+   
+  * test.c contains the test programs compiled to "test" executable.
+  * test certificates with error are generated with wrong_cert.s.
+  * start up registrar and masa.
+  * execute test with ./test coaps://IP_registrar -v 0 without alarm messages.
+  * execute test with ./test coaps://IP_registrar to visualize alarm messages returned by Registrar.
+   
 
 ##changes to libcoap
 
