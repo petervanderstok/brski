@@ -317,7 +317,7 @@ int64_t nr_of_free  = 0;
 int64_t nr_of_alloc = 0;
 
 void print_malloc(){
-	fprintf(stderr," number of free is %ld:     number of alloc is  %ld; allocated is %ld \n", nr_of_free, nr_of_alloc, nr_of_alloc - nr_of_free);
+	fprintf(stderr," number of free is %lld:     number of alloc is  %lld; allocated is %lld \n", nr_of_free, nr_of_alloc, nr_of_alloc - nr_of_free);
 }
 
 void *
