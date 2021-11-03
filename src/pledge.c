@@ -74,9 +74,6 @@ typedef union {
 
 #define COAP_PING        0  /* specified 0 command */
 
-#define DISCOVER_JOIN_PROXY    0
-#define DISCOVER_REGISTRAR     1
-
 #define FLAGS_BLOCK            0x01
 #define CREATE_URI_OPTS        1
 #define RELIABLE               0
@@ -111,6 +108,13 @@ static char int_ca_file[] = PLEDGE_CA  ;           /* CA for cert_file - for cer
 char *cert_file = int_cert_file;                   /* Combined certificate and private key in PEM */
 char *ca_file = int_ca_file;                       /* CA for cert_file - for cert checking in PEM */
 char *root_ca_file = NULL;                         /* List of trusted Root CAs in PEM */
+
+/* discover Registrar or join proxy  */
+
+char regis_discover[]      = "rt=brski-port";        /* discover registrar port */
+char join_proxy_discover[] = "rt=brski-proxy";       /* discover join proxy port */
+char *discover_rt          = regis_discover;         /* rt used for discovery (default is Registrar) */
+char *discover_choice      = regis_discover;         /* rt chosen with -R option    */
 
 #ifndef min
 #define min(a,b) ((a) < (b) ? (a) : (b))
@@ -1121,47 +1125,16 @@ pledge_enroll_certificate(client_request_t *client){
   return result;
 }
 
-/* pledge_discover_join_proxy
- * discover the join-proxy to connect to registrar that may own the network */
-uint8_t
-pledge_discover_join_proxy(client_request_t *client, coap_string_t *MC_coap){
-   coap_string_t query   = {.length = 0, .s = NULL};
-   coap_string_t path    = {.length =0 , .s = NULL};       
-/* discover registrar */
-  if (client == NULL) return 1;
-  char qr[] = "rt=ace.est.sen";
-  query.s = (uint8_t *)qr;
-  query.length = strlen(qr);
-  set_message_type( client, COAP_MESSAGE_NON);
-  set_query( client, &query);
-  char wk[] = ".well-known/core";
-  path.s = (uint8_t *)wk;
-  path.length = strlen(wk);
-  set_discovery_wanted();
-  set_host( client, MC_coap);       /* discovery address */
-  set_path( client, &path);
-  set_method( client, COAP_REQUEST_GET);
-  set_scheme( client, COAP_URI_SCHEME_COAP); 
-  if (coap_start_session( client) == NULL){
-	  coap_log(LOG_WARNING," start-session discovery address illegal\n");
-	  return 0;
-  };
-
-  uri_options_off( client);
-  return coap_start_request(client, 0); 
-}
-
-/* discover_registrar
- * discover the registrar that may own the network */
+/* discover_node
+ * discover the registrar or Join Proxy that may own the network */
 static uint8_t
-discover_registrar(client_request_t *client, coap_string_t *MC_coap){
+discover_node(client_request_t *client, coap_string_t *MC_coap){
    coap_string_t query   = {.length = 0, .s = NULL};
    coap_string_t path    = { .length =0 , .s = NULL}; 
    coap_string_t payload = { .length =0 , .s = NULL}; 
 /* discover registrar */
-  char qr[] = "rt=brski-port";
-  query.s = (uint8_t *)qr;
-  query.length = strlen(qr);
+  query.s = (uint8_t *)discover_rt;
+  query.length = strlen(discover_rt);
   set_message_type(client, COAP_MESSAGE_NON);
   set_query(client, &query);
   char wk[] = ".well-known/core";
@@ -1275,7 +1248,8 @@ usage( const char *program, const char *version) {
      "\t-v num \t\tVerbosity level (default 3, maximum is 9). Above 7,\n"
      "\t       \t\tthere is increased verbosity in GnuTLS and OpenSSL logging\n"
      "\t-J     \t\tJSON is used replacing CBOR using media-type application/voucher-cms+json\n"
-     "\t-R     \t\tDiscover Registrar, if not set, Join-Proxy is discovered \n"
+     "\t-R     \t\tDiscover Registrar, is default \n"
+     "\t-P     \t\tDiscover Join Proxy, if not set Registrar is discovered \n"
      "\t-p port\t\tPort of the coap device server\n"
      "\t       \t\tPort+1 is used for coaps device server \n"
      "\t       \t\tPort+2 is used for the coap Join_proxy port \n"
@@ -1287,9 +1261,10 @@ usage( const char *program, const char *version) {
      "\t-h     \t\tHelp displays this message \n"     
      "\texamples:\t  %s \n"
      "\t       \t\t  %s -R \n"
+     "\t       \t\t  %s -P -J \n"
      "\t       \t\t  %s coaps://localhost:5664 \n"
     , program, version, coap_string_tls_version(buffer, sizeof(buffer)),
-    program, program, program, program);
+    program, program, program, program, program);
 }
 
 #ifdef WITH_OSCORE
@@ -1440,37 +1415,6 @@ prepare_join_resource(coap_context_t *ctx){
        } else coap_log(LOG_WARNING,"brski URI does not exist  \n");
 
 } 
-   
-/* discover registrar brski_port 
- * address taken from enrollment 
- */
-int16_t
-pledge_discover_brski_port(client_request_t *client, uint16_t port){
-  coap_string_t query   = {.length = 0, .s = NULL};
-  coap_string_t path    = { .length =0 , .s = NULL}; 
-  coap_string_t payload = { .length =0 , .s = NULL};
-  if (client == NULL) return 1;  
-  char qr[] = "rt=brski-port";
-  query.s = (uint8_t *)qr;
-  query.length = strlen(qr);
-  set_message_type( client, COAP_MESSAGE_NON);
-  set_query( client, &query);
-  char wk[] = ".well-known/core";
-  path.s = (uint8_t *)wk;
-  path.length = strlen(wk);
-  set_discovery_wanted();
-  set_path( client, &path);
-  set_port( client, port); 
-  set_method( client, COAP_REQUEST_GET);
-  set_scheme( client, COAP_URI_SCHEME_COAP); 
-  if (coap_start_session(client) == NULL){
-	  coap_log(LOG_WARNING," start-session failed brski port discovery \n");
-	  return 1;
-  }
-  set_payload( client, &payload);
-  uri_options_off( client);
-  return coap_start_request( client, 0); 
-}
 
 
 /* pledge_registrar_session  
@@ -1609,8 +1553,7 @@ const char *state_names[] = { "START", "DISCOVERED", "CONNECTED", "RV_DONE", "VS
   int edhoc_required = 0;
   int coap_fd;
   fd_set m_readfds;
-  int nfds = 0;
-  uint8_t discovery = DISCOVER_JOIN_PROXY;  
+  int nfds = 0; 
 
 #ifndef _WIN32
   struct sigaction sa;
@@ -1620,7 +1563,7 @@ const char *state_names[] = { "START", "DISCOVERED", "CONNECTED", "RV_DONE", "VS
   clock_offset = time(NULL);
   set_JSON(JSON_OFF); /* can be set on with -J option */  
 
-  while ((opt = getopt(argc, argv, "JRd:p:b:l:E:v:h:")) != -1) {
+  while ((opt = getopt(argc, argv, "JRPd:p:b:l:E:v:h:")) != -1) {
     switch (opt) {
     case 'b':
       cmdline_blocksize( client, optarg);
@@ -1649,8 +1592,13 @@ const char *state_names[] = { "START", "DISCOVERED", "CONNECTED", "RV_DONE", "VS
       set_JSON(JSON_ON);
       break;
     case 'R' :
-      discovery = DISCOVER_REGISTRAR;
+      discover_rt     = regis_discover;
+      discover_choice = regis_discover;
       break;
+    case 'P' :
+      discover_rt     = join_proxy_discover;
+      discover_choice = join_proxy_discover;
+      break;      
     case 'h' :           
     default:
       usage( argv[0], LIBCOAP_PACKAGE_VERSION );
@@ -1758,14 +1706,11 @@ const char *state_names[] = { "START", "DISCOVERED", "CONNECTED", "RV_DONE", "VS
           exit(0);
       }
   }
-  uint16_t regis_coap_port  = 0;
   uint16_t regis_join_port  = 0;
   pledge_state_t pledge_state = START;  
   uint8_t        step = 1;               /* increase pledge_state with step */
   if (tmp_host == NULL){ /* registrar is not set in command line, so discover with MC */
-    if (discovery == DISCOVER_JOIN_PROXY) pledge_discover_join_proxy( client, &MC_coap);
-    else if (discovery == DISCOVER_REGISTRAR) discover_registrar( client, &MC_coap);
-    regis_coap_port  = COAP_DEFAULT_PORT;  /* for service disccovery, standard coap ports are required  */    
+    discover_node( client, &MC_coap);  
   } else { /* set registrar parameters  */
     coap_string_t new_host;
     new_host.length = tmp_host->length;
@@ -1773,11 +1718,6 @@ const char *state_names[] = { "START", "DISCOVERED", "CONNECTED", "RV_DONE", "VS
     memcpy(new_host.s, tmp_host->s, tmp_host->length); /* const pointer */
     set_host( client, &new_host);
     set_port( client, tmp_port);
-    if (edhoc_required){  /* for edhoc specified port is coap port */
-      regis_coap_port  = tmp_port;
-    } else {             /* for DTLS, specified port is coaps port */
-      regis_coap_port  = tmp_port-1;
-    }
     coap_free(new_host.s);
     pledge_state = DISCOVERED;    /*  registrar has been set  in command line, no discovery  */
     make_ready();
@@ -1847,7 +1787,9 @@ const char *state_names[] = { "START", "DISCOVERED", "CONNECTED", "RV_DONE", "VS
              if (ok == 0) ok = store_enrolled();
              if (ok == 0){
 		       coap_session_release(client->session);  /* close the DTLS session  */
-               pledge_discover_brski_port( client, regis_coap_port);
+		       discover_rt = regis_discover;
+               discover_node( client, &MC_coap);
+               discover_rt = discover_choice;
               }
 		     break;
 		   case JOIN_PROXY:

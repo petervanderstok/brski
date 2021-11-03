@@ -394,10 +394,7 @@ void do_local_tests(void){
   char comb_file[]  = PLEDGE_COMB;   /* PLEDGE KEY and CA certificate combined */
   char empty[]      = "";             /* 0 byte string */
   char anything[]   = "anything";     /* anything string  */
-  uint16_t regis_coap_port  = 0;
   uint16_t regis_join_port  = 0;
-  char acln[] = ALL_COAP_LOCAL_IPV4_NODES;
-  coap_string_t MC_coap           = {.s = (uint8_t *)acln,.length = strlen(acln)}; /* coap MultiCast address */
   coap_string_t any               = {.s = (uint8_t *)anything, .length = sizeof(anything)}; 
   coap_string_t ret_data          = {.s = NULL, .length = 0};  /* to return tenporary data in argument */
   coap_string_t cbor_PVR          = {.s = NULL, .length = 0};  /* cbor Pledge Voucher Request (PVR) */
@@ -427,9 +424,6 @@ void do_local_tests(void){
 
 /* test procedures in file pledge.c with NULL argument */                                	   
              fprintf(stderr,"\n     START pledge procedures test \n");
-             TEST_VOID(pledge_discover_join_proxy( NULL, &MC_coap));
-             if (MC_coap.s != (uint8_t *)acln) fprintf(stderr,"    ERROR: wrong contents \n");
-             else  fprintf(stderr,"OK return \n");  
              TEST_NOK(pledge_connect_pledge( NULL));                     
 		     TEST_NOK(pledge_voucher_request( NULL));     
 		     TEST_NOK(pledge_arrived(registrar_code, NULL));               	     	     
@@ -437,8 +431,6 @@ void do_local_tests(void){
              TEST_NOK(pledge_get_attributes( NULL));   
              TEST_NOK(pledge_enroll_certificate( NULL));                 
              TEST_NOK(pledge_status_voucher( NULL));                                                  
-             TEST_VOID(pledge_discover_brski_port( NULL, regis_coap_port));
-             fprintf(stderr,"OK return \n");  
 		     TEST_NOK(pledge_registrar_session( NULL, &regis_join_port));
              fprintf(stderr,"     END of local procedure test \n");
                                                  
