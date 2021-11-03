@@ -42,14 +42,8 @@ pledge_get_attributes(client_request_t *client);
 int8_t 
 pledge_enroll_certificate(client_request_t *client);
 
-uint8_t
-pledge_discover_join_proxy(client_request_t *client, coap_string_t *MC_coap);
-
 int
 pledge_get_contexts(client_request_t *client, client_request_t *server, const char *node, const char *port);
-
-int16_t
-pledge_discover_brski_port(client_request_t *client, uint16_t port);
 	
 int8_t
 pledge_registrar_session(client_request_t *client, uint16_t *port);
