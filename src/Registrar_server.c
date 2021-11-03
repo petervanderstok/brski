@@ -1271,6 +1271,27 @@ call_http_MASA(coap_string_t *payload, coap_string_t *resource, coap_string_t *h
         coap_log( LOG_ERR, " failed\n  ! mbedtls_ctr_drbg_seed returned %d\n", ret );
         goto exit;
     }
+    
+    /*
+     * -1 Check host name
+     */
+     
+     char unknown[]= "unknownhost";   /* used as test value for non existent masa */
+     struct addrinfo hints;
+     struct addrinfo *addr;
+     memset(&hints, 0, sizeof(hints));
+     create_port(host_name, &port_name);
+     int s = getaddrinfo((const char *)host_name->s, NULL, &hints, &addr); 
+     if (s!= 0){
+       coap_log(LOG_ERR," host name %s of Registrar generates error: %s \n", host_name->s, gai_strerror(s));
+       freeaddrinfo(addr);
+       goto exit;
+     }
+     freeaddrinfo(addr);
+     if (strcmp((char *)host_name->s, unknown) == 0){
+       coap_log(LOG_ERR," host name %s of Registrar does not exist per definition\n", host_name->s);
+       goto exit;
+     }
 
     /*
      * 0. Initialize certificates
@@ -1281,7 +1302,7 @@ call_http_MASA(coap_string_t *payload, coap_string_t *resource, coap_string_t *h
     if( ret < 0 )
     {
 	  coap_log( LOG_ERR, " failed\n  !  mbedtls_x509_crt_parse_file returned -0x%x\n\n", (unsigned int) -ret );
-      goto exit;
+	  goto exit;
     }
     
     coap_log(LOG_INFO, "loading server certificate from %s to cltcert\n", client_file_name);
@@ -1309,7 +1330,7 @@ call_http_MASA(coap_string_t *payload, coap_string_t *resource, coap_string_t *h
     /*
      * 1. Start the connection
      */
-     create_port(host_name, &port_name);
+
     if( ( ret = mbedtls_net_connect( &server_fd, (char *)host_name->s,
                                          (char *)port_name.s, MBEDTLS_NET_PROTO_TCP ) ) != 0 )
     {
