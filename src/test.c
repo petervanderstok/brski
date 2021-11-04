@@ -394,7 +394,6 @@ void do_local_tests(void){
   char comb_file[]  = PLEDGE_COMB;   /* PLEDGE KEY and CA certificate combined */
   char empty[]      = "";             /* 0 byte string */
   char anything[]   = "anything";     /* anything string  */
-  uint16_t regis_join_port  = 0;
   coap_string_t any               = {.s = (uint8_t *)anything, .length = sizeof(anything)}; 
   coap_string_t ret_data          = {.s = NULL, .length = 0};  /* to return tenporary data in argument */
   coap_string_t cbor_PVR          = {.s = NULL, .length = 0};  /* cbor Pledge Voucher Request (PVR) */
@@ -430,8 +429,7 @@ void do_local_tests(void){
 		   	 TEST_NOK(pledge_get_certificate( NULL));                	   	 
              TEST_NOK(pledge_get_attributes( NULL));   
              TEST_NOK(pledge_enroll_certificate( NULL));                 
-             TEST_NOK(pledge_status_voucher( NULL));                                                  
-		     TEST_NOK(pledge_registrar_session( NULL, &regis_join_port));
+             TEST_NOK(pledge_status_voucher( NULL));                                                 
              fprintf(stderr,"     END of local procedure test \n");
                                                  
 /* test all procedures in brski.c which are exported in brski.h */             

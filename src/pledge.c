@@ -899,7 +899,6 @@ JP_hnd_proxy(coap_context_t *ctx UNUSED_PARAM,
 static int8_t verify_discovery(client_request_t *client){
 	uint16_t port;
 	coap_string_t *host = get_discovered_host_port(&port);
-    fprintf(stderr,"discovered port is %d \n", port);
 	if (host == NULL) return 1;
 	/* coaps is wanted, set coaps port */
 	if (port == 5683) port++;	
@@ -1420,12 +1419,10 @@ prepare_join_resource(coap_context_t *ctx){
 /* pledge_registrar_session  
  * starts the session to the registrar needed for stateless join_proxy 
  */
-int8_t
-pledge_registrar_session(client_request_t *client, uint16_t *port){
+static int8_t
+pledge_registrar_session(client_request_t *client){
   if (client == NULL)return 1;
-  get_discovered_host_port( port);
-  if (*port == 0) return 1;
-  set_port(client, *port);
+
   coap_session_t *session = coap_start_session( client);
   if (session == NULL){
 	  coap_log(LOG_WARNING," start_session failed join_proxy <-> registrar session \n");
@@ -1779,8 +1776,7 @@ const char *state_names[] = { "START", "DISCOVERED", "CONNECTED", "RV_DONE", "VS
 		     if (ok == 0)ok = pledge_get_attributes( client);
 		     break;
 		   case ATTRIBUTES:
-		     ok = pledge_arrived(cert_code, &registrar_cert);
-		     if (ok == 0)ok = pledge_enroll_certificate( client);
+		     if (cert_code >> 5 == 2)ok = pledge_enroll_certificate( client);
 		     break;
 		   case ENROLLED:
 		     ok = pledge_arrived(cert_code, &registrar_cert);
@@ -1788,15 +1784,19 @@ const char *state_names[] = { "START", "DISCOVERED", "CONNECTED", "RV_DONE", "VS
              if (ok == 0){
 		       coap_session_release(client->session);  /* close the DTLS session  */
 		       discover_rt = regis_discover;
+		       set_port( client, COAP_DEFAULT_PORT);
                discover_node( client, &MC_coap);
                discover_rt = discover_choice;
-              }
-		     break;
+             } 
+             break;
 		   case JOIN_PROXY:
-		     coap_session_release(client->session);  /* close the discovery session */
-             prepare_join_resource( client->ctx);
-		     ok = pledge_registrar_session( client, &regis_join_port);              /* is last state */
+		     ok = verify_discovery( client);
+		     regis_join_port = get_port( client);
+		     if (ok != 0) break;     /* a registrar is discovered */
+             prepare_join_resource( server->ctx);
+		     ok = pledge_registrar_session( client);              /* is last state */
              coap_log(LOG_INFO," discovered join_port of registrar is %d\n", regis_join_port);
+             fprintf(stderr," discovered join_port of registrar is %d\n", regis_join_port);
 		     break;
 		   default:
 		     ok = 1;
