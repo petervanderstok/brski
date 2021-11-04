@@ -346,8 +346,6 @@ return_authority_aki( mbedtls_x509_buf *asn, coap_string_t *key_id){
 	key_id->length = key_id->length+2;
 	coap_free(key_id->s);
 	key_id->s = tmp;
-	for (uint qq = 0; qq < key_id->length; qq++)fprintf(stderr," %02x",key_id->s[qq]);	
-	fprintf(stderr,"\n");
 	return 0;
 }
 
