@@ -243,9 +243,9 @@ find_sid(coap_string_t *text,uint8_t type){
 /* return_oid
  * returns value of specified OID of x509 v3 ca certificate 
  * returns Ok =0 , Nok 1
- * asn is pointer to certificate asn1 string
- * oid_name contains oid identifier
- * oid_value contains returned oid value
+ * IN:  asn is pointer to certificate asn1 string
+ * IN:  oid_name contains oid identifier
+ * OUT: oid_value contains returned oid value
  */
 int8_t
 brski_return_oid( mbedtls_x509_buf *asn, coap_string_t *oid_name, coap_string_t *oid_value){
@@ -311,8 +311,8 @@ brski_return_oid( mbedtls_x509_buf *asn, coap_string_t *oid_name, coap_string_t 
 /* return_subject_ski
  * returns subject key identifier in subject of x509 v3 ca certificate 
  * returns Ok =0 , Nok 1
- * asn is pointer to subject asn1 string
- * key_id contains returned key identifier
+ * IN:  asn is pointer to subject asn1 string
+ * OUT: key_id contains returned key identifier
  */
 static int8_t
 return_subject_ski( mbedtls_x509_buf *asn, coap_string_t *key_id){
@@ -326,8 +326,8 @@ return_subject_ski( mbedtls_x509_buf *asn, coap_string_t *key_id){
 /* return_authority_aki
  * returns subject key identifier in subject of x509 v3 ca certificate 
  * returns Ok =0 , Nok 1
- * asn is pointer to subject asn1 string
- * key_id contains returned key identifier
+ * IN:  asn is pointer to subject asn1 string
+ * OUT: key_id contains returned key identifier
  */
 static int8_t
 return_authority_aki( mbedtls_x509_buf *asn, coap_string_t *key_id){
@@ -338,22 +338,16 @@ return_authority_aki( mbedtls_x509_buf *asn, coap_string_t *key_id){
 		coap_log(LOG_WARNING," Authority Key Identifier OID is not found \n");
 		return 1;
 	}
-	/* extract authority key identifier from asn envelop */
-	/*
-	size_t plen = 0;
-	uint8_t *p = key_id->s;
-	uint8_t *end = key_id->s + key_id->length;
-    int ret = mbedtls_asn1_get_tag(&p, end , &plen ,
-        MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE);
-	if ( ret != 0){
-		coap_log(LOG_WARNING," Authority Key Identifier structure error \n");
-		return 1;
-	}
-	p++;
-	ret = mbedtls_asn1_get_len(&p, end, &plen);
-	memcpy(key_id->s, p, plen);
-	key_id->length = plen;
-	* */
+	/* prefix OCTET STRING size 24 */
+	uint8_t *tmp = coap_malloc(key_id->length+2);
+	tmp[0] = MBEDTLS_ASN1_OCTET_STRING;
+	tmp[1] = key_id->length;
+	memcpy(tmp+2, key_id->s, key_id->length);
+	key_id->length = key_id->length+2;
+	coap_free(key_id->s);
+	key_id->s = tmp;
+	for (uint qq = 0; qq < key_id->length; qq++)fprintf(stderr," %02x",key_id->s[qq]);	
+	fprintf(stderr,"\n");
 	return 0;
 }
 
