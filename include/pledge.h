@@ -44,9 +44,6 @@ pledge_enroll_certificate(client_request_t *client);
 
 int
 pledge_get_contexts(client_request_t *client, client_request_t *server, const char *node, const char *port);
-	
-int8_t
-pledge_registrar_session(client_request_t *client, uint16_t *port);
 
 int
 pledge(int argc, char **argv);
