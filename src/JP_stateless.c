@@ -18,10 +18,13 @@
 #include "JP_server.h"
 #include "coap_internal.h"
 #include "brski.h"
-
 #include <coap.h>
 
 uint8_t debug_counter = 0;
+/*counters for statistics */
+static int srv_cnt = 0;                       /* total number of server invocations */
+static int srv_server_cnt = 0;                /* server invocations */
+static int srv_proxy_cnt = 0;                /* proxy invocations */
 
 /* brskfd is the file-descriptor of the server_port of the join_proxy to write to client  */
 /* registrar_session is the fixed session to the registrar
@@ -498,15 +501,21 @@ jp_send_out(coap_session_t *session_in, uint8_t *payload, size_t len){
  */
 int
 jp_return_transfer(coap_session_t *in_session, const uint8_t *payload, size_t len){
+    srv_cnt++;
+    fprintf(stderr,"jp_return_transfer \n");
     switch (transfer_type){
 		case JP_NOT_DEFINED:
 		  coap_log(LOG_WARNING,"join-proxy code is not initialized  \n");
 		  return -1;
 		  break;
         case JP_PROXY:
+          srv_proxy_cnt++; 
+	  fprintf(stderr," jp-transfer server invoked %d  times; server servers invoked %d times total invocations is %d\n", srv_proxy_cnt, srv_server_cnt, srv_cnt);		  	
           return jp_pass_back( in_session, payload, len);
           break;
         case JP_SERVER:
+          srv_server_cnt++; 
+	  fprintf(stderr," jp-transfer server invoked %d  times; server servers invoked %d times total invocations is %d\n", srv_proxy_cnt, srv_server_cnt, srv_cnt);		  	
           return jp_send_back( in_session, payload, len);
           break;
         default:
@@ -525,12 +534,15 @@ jp_return_transfer(coap_session_t *in_session, const uint8_t *payload, size_t le
  */
 int
 jp_transfer (coap_session_t *session, uint8_t *payload, size_t len){
-	switch (transfer_type){
-		case JP_NOT_DEFINED:
-		  coap_log(LOG_WARNING,"join-proxy code is not initialized  \n");
-		  return -1;
-		  break;
+    srv_cnt++;
+    switch (transfer_type){
+	case JP_NOT_DEFINED:
+	  coap_log(LOG_WARNING,"join-proxy code is not initialized  \n");
+	  return -1;
+	  break;
         case JP_PROXY:
+           srv_proxy_cnt++; 
+	   fprintf(stderr," jp-transfer server invoked %d  times; server servers invoked %d times total invocations is %d\n", srv_proxy_cnt, srv_server_cnt, srv_cnt);	   
           if (session == jp_get_registrar_session()){
 			 return jp_pass_back(session, payload, len);	
           } else {
@@ -538,6 +550,8 @@ jp_transfer (coap_session_t *session, uint8_t *payload, size_t len){
 		  }
           break;
         case JP_SERVER:
+	  srv_server_cnt++;
+	  fprintf(stderr," jp-transfer server invoked %d  times; server servers invoked %d times total invocations is %d\n", srv_proxy_cnt, srv_server_cnt, srv_cnt);	  	
           return jp_receive_in(session, payload, len);
           break;
         default:

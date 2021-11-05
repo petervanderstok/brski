@@ -111,7 +111,8 @@ char *root_ca_file = NULL;                         /* List of trusted Root CAs i
 
 /* discover Registrar or join proxy  */
 
-char regis_discover[]      = "rt=brski-port";        /* discover registrar port */
+char regis_discover[]      = "rt=ace.est.rv";        /* discover registrar for direct enrollemnt */
+char regis_port_discover[] = "rt=brski-port";        /* discover registrar port for join_proxy */
 char join_proxy_discover[] = "rt=brski-proxy";       /* discover join proxy port */
 char *discover_rt          = regis_discover;         /* rt used for discovery (default is Registrar) */
 char *discover_choice      = regis_discover;         /* rt chosen with -R option    */
@@ -899,6 +900,7 @@ JP_hnd_proxy(coap_context_t *ctx UNUSED_PARAM,
 static int8_t verify_discovery(client_request_t *client){
 	uint16_t port;
 	coap_string_t *host = get_discovered_host_port(&port);
+	fprintf(stderr,"discovered host port is %d \n", port);
 	if (host == NULL) return 1;
 	/* coaps is wanted, set coaps port */
 	if (port == 5683) port++;	
@@ -1727,9 +1729,11 @@ const char *state_names[] = { "START", "DISCOVERED", "CONNECTED", "RV_DONE", "VS
 	   switch (pledge_state) {
 		   case START:
 		     ok = verify_discovery( client);
-		     if (ok != 0) break;     /* a registrar is discovered */
-             if (edhoc_required) set_port( client, COAP_DEFAULT_PORT); /* choose appropriate port   */
-             else set_port( client, COAPS_DEFAULT_PORT);               /* coaps port for DTLS, coap port for edhoc */
+		     fprintf(stderr,"verify_discovery returns %d \n", ok);
+		     if (ok != 0){     /* a registrar is not discovered */
+               if (edhoc_required) set_port( client, COAP_DEFAULT_PORT); /* choose appropriate port   */
+               else set_port( client, COAPS_DEFAULT_PORT);               /* coaps port for DTLS, coap port for edhoc */
+		     }
              pledge_state++;
 		   case DISCOVERED:
              if (edhoc_required){ /* make edhoc connection  */
@@ -1783,7 +1787,7 @@ const char *state_names[] = { "START", "DISCOVERED", "CONNECTED", "RV_DONE", "VS
              if (ok == 0) ok = store_enrolled();
              if (ok == 0){
 		       coap_session_release(client->session);  /* close the DTLS session  */
-		       discover_rt = regis_discover;
+		       discover_rt = regis_port_discover;
 		       set_port( client, COAP_DEFAULT_PORT);
                discover_node( client, &MC_coap);
                discover_rt = discover_choice;
