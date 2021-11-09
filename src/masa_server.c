@@ -64,6 +64,11 @@ char port_str[NI_MAXSERV] = MASA_PORT;
 #define DEBUG_LEVEL 0   /* for mbedtls debugging traces */
 int masa_debug = 0;
 
+/* counters for statistics  */
+static int srv_cnt = 0;                      /* total number of server invocations */
+static int srv_post_ra_cnt = 0;              /* post_rv invocations */
+static int srv_post_rv_cnt = 0;              /* post_rv invocations */
+
 #define PUT    "PUT"
 #define POST   "POST"
 #define GET    "GET"
@@ -348,7 +353,8 @@ void
 MS_hnd_post_rv(coap_string_t *signed_voucher_request, uint16_t ct,
                    coap_string_t *signed_voucher)
 {
-	fprintf(stderr," Start /est/rv in MASA \n");
+  srv_cnt++;
+  srv_post_rv_cnt++;
   coap_string_t *voucher_request = NULL;
   char cpc[] = MASA_CLIENT_DER;  /* request is signed by registrar  */
   char *file_name = cpc;
@@ -360,32 +366,30 @@ MS_hnd_post_rv(coap_string_t *signed_voucher_request, uint16_t ct,
   } else if (ct == COAP_MEDIATYPE_APPLICATION_VOUCHER_CMS_JSON){
       /* cms signed voucher_request */
       voucher_request = brski_verify_cms_signature(signed_voucher_request, ca_name, file_name);
-//      fprintf(stderr,"voucher request with length %d \n",(int)voucher_request->length);
-//      for (uint qq = 0; qq < voucher_request->length; qq++)fprintf(stderr,"%c",voucher_request->s[qq]);
- //     fprintf(stderr,"\n");
   }  else if (ct == COAP_MEDIATYPE_APPLICATION_CBOR){
 	  voucher_request = malloc(sizeof(coap_string_t));
 	  voucher_request->length = signed_voucher_request->length;
 	  voucher_request->s = malloc(signed_voucher_request->length);
 	  memcpy(voucher_request->s, signed_voucher_request->s, signed_voucher_request->length);	
   }  
+
   if (voucher_request != NULL){
 	  if (ct == COAP_MEDIATYPE_APPLICATION_VOUCHER_COSE_CBOR)
-	     req_contents = brski_parse_cbor_voucher(voucher_request);
+	        req_contents = brski_parse_cbor_voucher(voucher_request);
 	  else if  (ct == COAP_MEDIATYPE_APPLICATION_VOUCHER_CMS_JSON)  
-	     req_contents = brski_parse_json_voucher(voucher_request);
-	  if (voucher_request->s != NULL) free(voucher_request->s);
-	  free(voucher_request);
+	        req_contents = brski_parse_json_voucher(voucher_request);
+	  if(voucher_request->s != NULL)coap_free(voucher_request->s);
+	  coap_free(voucher_request);
   }
   if (req_contents == NULL){
-		  error_return( 406, "voucher request cannot be parsed\n");
-	      return;
+	error_return( 406, "voucher request cannot be parsed\n");
+	return;
   }
   int8_t ok = brski_check_pledge_request(req_contents);
   if (ok ==1){
-	  error_return(403, "signature of prior voucher request is invalid\n");
+      error_return(403, "signature of prior voucher request is invalid\n");
       remove_voucher(req_contents);       
-	  return;
+      return;
   }
 
   coap_string_t voucher = {.s = NULL, .length = 0};
@@ -397,17 +401,17 @@ MS_hnd_post_rv(coap_string_t *signed_voucher_request, uint16_t ct,
             ok = brski_create_json_voucher(&voucher, req_contents);
   remove_voucher(req_contents);
   if (ok != 0){
-	  error_return(406, "voucher is not generated\n");
-      if (voucher.s != NULL)free(voucher.s);
-	  return;
+      error_return(406, "voucher is not generated\n");
+      if (voucher.s != NULL)coap_free(voucher.s);
+      return;
   }
   if (masa_debug > 0)printf("masa signs voucher with key_file %s \n", comb_file);
   if (ct == COAP_MEDIATYPE_APPLICATION_VOUCHER_COSE_CBOR)
      ok = brski_cose_sign_payload(signed_voucher, &voucher, comb_file);
   else
      ok = brski_cms_sign_payload(signed_voucher, &voucher, comb_file);
-  if (voucher.s != NULL)free(voucher.s);
-  fprintf(stderr,"End /est/rv \n");
+  if (voucher.s != NULL)coap_free(voucher.s);
+  fprintf(stderr," post_est_rv server invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", srv_post_rv_cnt, srv_cnt, (int)coap_nr_of_alloc());
   if (ok != 0){
 	 error_return(406, "cannot sign voucher\n");
 	 return; 
@@ -422,7 +426,8 @@ MS_hnd_post_rv(coap_string_t *signed_voucher_request, uint16_t ct,
 void
 MS_hnd_post_ra(coap_string_t *voucher_request, coap_string_t *log)
 {
-   fprintf(stderr,"Start /est/ra in MASA \n");
+  srv_cnt++;
+  srv_post_ra_cnt++;
   /* try to find domainid in request-voucher  */
   uint8_t *domain_id = NULL;
   voucher_t *req_contents = NULL;
@@ -444,7 +449,7 @@ MS_hnd_post_ra(coap_string_t *voucher_request, coap_string_t *log)
 	  }
 	  if (req2 == NULL){
 		  error_return(404, "received embedded voucher request is wrong\n");
-          remove_voucher( req_contents);
+               remove_voucher( req_contents);
 	      return;
 	  }
 	  domain_id = req2->domainid;
@@ -466,8 +471,8 @@ MS_hnd_post_ra(coap_string_t *voucher_request, coap_string_t *log)
   }
   log->s = temp->s;
   log->length = temp->length;
-  free(temp);
-  fprintf(stderr,"End /est/ra \n");
+  coap_free(temp);
+  fprintf(stderr," post_est_ra server invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", srv_post_ra_cnt, srv_cnt, (int)coap_nr_of_alloc());
 }
 
 static void my_debug( void *ctx, int level,
@@ -771,6 +776,8 @@ end:
 		}
     }
     
+    coap_free(response.s);
+    response.s = NULL;
 
     while( ( ret = mbedtls_ssl_write( &ssl, buf, len ) ) <= 0 )
     {
