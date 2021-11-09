@@ -1807,6 +1807,7 @@ RG_hnd_post_vs(coap_context_t *ctx,
   coap_tid_t tid = coap_send_ack(session, request);
   if (tid == COAP_INVALID_TID)
             coap_log(LOG_DEBUG, "message_handler: error sending intermediate acknowledgement\n");
+  response->type = COAP_MESSAGE_CON;	    
   /* invoke MASA */
   int16_t http_resp = call_MASA_ra( status, &RG_ret_data, file_name);
   if (http_resp > 299){
@@ -2011,7 +2012,7 @@ RG_hnd_post_rv(coap_context_t *ctx,
   coap_tid_t tid = coap_send_ack(session, request);
   if (tid == COAP_INVALID_TID)
             coap_log(LOG_DEBUG, "message_handler: error sending intermediate acknowledgement\n");
-
+  response->type = COAP_MESSAGE_CON;
   /* continue return message */
   int16_t http_resp = call_MASA_rv(&masa_request_sign, &RG_ret_data, file_name);
   if (http_resp > 299){
