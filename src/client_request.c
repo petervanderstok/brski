@@ -378,6 +378,7 @@ init_URIs(coap_address_t *addr, uint8_t proto, uint8_t port_type){
 static int16_t
 store_discovery_payload(coap_session_t *session, unsigned char *data, size_t len, uint16_t code) 
 {
+   fprintf(stderr,"store_doscovery_payload  start; number of malloc is %d \n", (int)coap_nr_of_alloc());	
    last_code = code;
    uint8_t found = 0;  /* indicates presence of [  ] around address */
    static unsigned char alternative[INET6_ADDRSTRLEN +32];
@@ -429,6 +430,7 @@ store_discovery_payload(coap_session_t *session, unsigned char *data, size_t len
 	   p++;
    }
    temp->port = port;
+   fprintf(stderr,"store_doscovery_payload  end; number of malloc is %d \n", (int)coap_nr_of_alloc());	
    return 0;
 }
 
@@ -651,7 +653,6 @@ message_handler(struct coap_context_t *ctx,
 	  coap_log(LOG_ERR,"unknown client context in mesage_handler\n");
 	  return;
   }
-
   coap_log(LOG_DEBUG, "** process incoming %d.%02d response:\n",
            (received->code >> 5), received->code & 0x1F);
   if (coap_get_log_level() < LOG_DEBUG)
@@ -671,10 +672,11 @@ message_handler(struct coap_context_t *ctx,
         if (coap_get_data(received, &len, &databuf)){  
 	       store_discovery_payload(session, databuf, len, received->code);
 	    }
-        ready = discovery;
+        if (discovery == 0)reset_ready();
+        else make_ready();
       }
       else if ((received->code >> 5) == 4){
-		    ready = 0;
+		    reset_ready();
 		    return;
 	  }
   }  /* if discovery tid  */
@@ -709,8 +711,10 @@ message_handler(struct coap_context_t *ctx,
       } /* coap_get_data  */
       if (coap_opt_block_num(block_opt) == 0) {
         /* See if observe is set in first response */
-        ready = coap_check_option(received,
-                                  COAP_OPTION_OBSERVE, &opt_iter) == NULL;
+        int tmp = coap_check_option(received,
+                                  COAP_OPTION_OBSERVE, &opt_iter) == NULL;                      
+        if (tmp == 0)reset_ready();
+        else make_ready();
       }
       if(COAP_OPT_BLOCK_MORE(block_opt)) {
         /* more bit is set */
@@ -760,6 +764,7 @@ message_handler(struct coap_context_t *ctx,
       }  /* (COAP_OPT_BLOCK_MORE(block_opt)) */
       /* M bit is not set, last block */
       doing_getting_block = 0;
+      if (session->con_active)session->con_active--;
       return;
     } else { /* no Block2 option */
       block_opt = coap_check_option(received, COAP_OPTION_BLOCK1, &opt_iter);
@@ -807,7 +812,7 @@ message_handler(struct coap_context_t *ctx,
           if (coap_get_data(received, &len, &databuf)){
               cur_resp_handler(databuf, len, received->code, block.num, COAP_OPT_BLOCK_MORE(block_opt));
 		  }
-          ready = 1;
+          make_ready();
           return;
         }
 
@@ -867,11 +872,13 @@ message_handler(struct coap_context_t *ctx,
           return;
         }
       } else {
+		if (received->type == COAP_MESSAGE_CON){
+           if (session->con_active)session->con_active--;
+		}
         /* There is no block option set, just read the data and we are done. */
         if (coap_get_data(received, &len, &databuf)){
           cur_resp_handler( databuf, len, received->code, 0, 0);
-        } /* coap_get_data  */
-        ready = 1;
+        }
       }
     }
   } else {      /* no 2.05 */
@@ -894,9 +901,13 @@ message_handler(struct coap_context_t *ctx,
   assert(pdu == NULL);
 
   /* our job is done, we can exit at any time */
-  ready = coap_check_option(received, COAP_OPTION_OBSERVE, &opt_iter) == NULL;
+  int tmp = (coap_check_option(received, COAP_OPTION_OBSERVE, &opt_iter) == NULL);
+  if (tmp == 0)reset_ready();
+  else make_ready();
   /* check on empty ack  */
-  if ((received->code == 0) && (received->type == COAP_MESSAGE_ACK)) ready = 0;
+  if ((received->code == 0) && (received->type == COAP_MESSAGE_ACK)){
+	   reset_ready();
+   }
 }
 
 
@@ -1009,8 +1020,6 @@ verify_pki_sni_callback(const char *sni,
                     void *arg
 ) {
   static coap_dtls_key_t dtls_key;
-  fprintf(stderr,"\n\n        verify_pki_sni_callback sni[0] is %d \n\n", (int)sni[0]);
-
   /* Preset with the defined keys */
   client_request_t *client =   (client_request_t *)arg;
   memset (&dtls_key, 0, sizeof(dtls_key));
@@ -1019,11 +1028,6 @@ verify_pki_sni_callback(const char *sni,
     dtls_key.key.pem.public_cert = client->cert_file;
     dtls_key.key.pem.private_key = client->cert_file;
     dtls_key.key.pem.ca_file =     client->ca_file;
-    /*
-    dtls_key.key.pem.public_cert = cert_file;
-    dtls_key.key.pem.private_key = cert_file;
-    dtls_key.key.pem.ca_file =     ca_file;
-    * */
   }
   else {
     dtls_key.key_type = COAP_PKI_KEY_PEM_BUF;
@@ -1033,14 +1037,6 @@ verify_pki_sni_callback(const char *sni,
     dtls_key.key.pem_buf.ca_cert_len =     client->ca_mem_len;
     dtls_key.key.pem_buf.public_cert_len = client->cert_mem_len;
     dtls_key.key.pem_buf.private_key_len = client->cert_mem_len;
-    /*
-    dtls_key.key.pem_buf.ca_cert =         ca_mem;
-    dtls_key.key.pem_buf.public_cert =     cert_mem;
-    dtls_key.key.pem_buf.private_key =     cert_mem;
-    dtls_key.key.pem_buf.ca_cert_len =     ca_mem_len;
-    dtls_key.key.pem_buf.public_cert_len = cert_mem_len;
-    dtls_key.key.pem_buf.private_key_len = cert_mem_len;
-    * */
   }
   if (sni[0]) {
     size_t i;
@@ -1538,13 +1534,10 @@ coap_start_request(client_request_t *client, uint16_t ct){
                                    client->payload.s, client->payload.length))) {
     return -1;;
   }
-  if (discovery) discovery_tid = pdu->tid; /* set discovery tranaction ident */
-  reset_ready();      /* ready is set to 1 after return of request  */
-
+  if (discovery) discovery_tid = pdu->tid; /* set discovery transaction ident */
   coap_log(LOG_DEBUG, "sending CoAP request:\n");
   if (coap_get_log_level() < LOG_DEBUG)
-    coap_show_pdu(LOG_INFO, pdu);
-
+         coap_show_pdu(LOG_INFO, pdu);
   coap_send(client->session, pdu);
   return 0;
 }

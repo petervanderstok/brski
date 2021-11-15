@@ -1817,7 +1817,7 @@ RG_hnd_post_vs(coap_context_t *ctx,
   coap_add_data_blocked_response(resource, session, request, response, token,
                                  content_format, -1,
                                  RG_ret_data.length, RG_ret_data.s);  
-  fprintf(stderr," Post_vs server  invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", srv_post_vs_cnt, srv_cnt, (int)coap_nr_of_alloc());                            
+   fprintf(stderr," Post_vs server  tid %04x, invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", response->tid, srv_post_vs_cnt, srv_cnt, (int)coap_nr_of_alloc());                            
 }
 
 /*
@@ -1863,7 +1863,7 @@ RG_hnd_get_es(coap_context_t *ctx UNUSED_PARAM,
 	  return;
   }
   response->code = COAP_RESPONSE_CODE(203);   
-  fprintf(stderr," post_es server invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", srv_get_es_cnt, srv_cnt, (int)coap_nr_of_alloc());
+  fprintf(stderr," post_es server tid %04x, invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", response->tid, srv_get_es_cnt, srv_cnt, (int)coap_nr_of_alloc());
 }
 
 /*
@@ -2021,7 +2021,7 @@ RG_hnd_post_rv(coap_context_t *ctx,
 	  return;
   }   
   coap_free(masa_request_sign.s);
-  fprintf(stderr," Post_rv server  invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", srv_post_rv_cnt, srv_cnt, (int)coap_nr_of_alloc());  
+  fprintf(stderr," Post_rv server  tid %04x, invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", response->tid, srv_post_rv_cnt, srv_cnt, (int)coap_nr_of_alloc());  
   coap_add_data_blocked_response(resource, session, request, response, token,
                                  content_format, -1,
                                  RG_ret_data.length, RG_ret_data.s);
@@ -2073,7 +2073,7 @@ RG_hnd_get_crts(coap_context_t *ctx UNUSED_PARAM,
   coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_PKCS7_CERTS, -1,
                                  RG_ret_data.length, RG_ret_data.s); 
-  fprintf(stderr," get_crts server invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", srv_get_crts_cnt, srv_cnt, (int)coap_nr_of_alloc());                                                   
+  fprintf(stderr," get_crts server tid %04x, invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", response->tid, srv_get_crts_cnt, srv_cnt, (int)coap_nr_of_alloc());                                                   
 }
 
 /*
@@ -2153,7 +2153,7 @@ RG_hnd_post_sen(coap_context_t *ctx UNUSED_PARAM,
   coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_PKCS7_CERTS, -1,
                                  RG_ret_data.length, RG_ret_data.s); 
-  fprintf(stderr," post_sen server invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", srv_post_sen_cnt, srv_cnt, (int)coap_nr_of_alloc());                                                         
+  fprintf(stderr," post_sen server tid %04x, invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", response->tid, srv_post_sen_cnt, srv_cnt, (int)coap_nr_of_alloc());                                                         
 }
 
 /*
@@ -2214,7 +2214,7 @@ RG_hnd_post_sren(coap_context_t *ctx UNUSED_PARAM,
   coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_PKCS7_CERTS, -1,
                                  RG_ret_data.length, RG_ret_data.s);
-  fprintf(stderr," post_sren server invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", srv_post_sren_cnt, srv_cnt, (int)coap_nr_of_alloc());                               
+  fprintf(stderr," post_sren server tid %04x, invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", response->tid, srv_post_sren_cnt, srv_cnt, (int)coap_nr_of_alloc());                               
 }
 
 /*
@@ -2294,7 +2294,7 @@ RG_hnd_post_skg(coap_context_t *ctx UNUSED_PARAM,
   coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_MULTIPART_CORE, -1,
                                  RG_ret_data.length, RG_ret_data.s);
-  fprintf(stderr," post-skg server invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", srv_post_skg_cnt, srv_cnt, (int)coap_nr_of_alloc());                         
+  fprintf(stderr," post-skg server  tid %04x, invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", response->tid, srv_post_skg_cnt, srv_cnt, (int)coap_nr_of_alloc());                         
 }
 
 /*
@@ -2340,7 +2340,7 @@ RG_hnd_get_att(coap_context_t *ctx UNUSED_PARAM,
   coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_CSRATTRS, -1,
                                  RG_ret_data.length, RG_ret_data.s);
-  fprintf(stderr," get_att server  invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", srv_get_att_cnt, srv_cnt, (int)coap_nr_of_alloc());                            
+  fprintf(stderr," get_att server tid %04x, invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", response->tid, srv_get_att_cnt, srv_cnt, (int)coap_nr_of_alloc());                            
 }
 
 

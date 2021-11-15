@@ -902,10 +902,13 @@ static int8_t verify_discovery(client_request_t *client){
 	coap_string_t *host = get_discovered_host_port(&port);
 	fprintf(stderr,"discovered host port is %d \n", port);
 	if (host == NULL) return 1;
-	/* coaps is wanted, set coaps port */
-	if (port == 5683) port++;	
+	/* coaps is wanted after discovery , set coaps port  and scheme */
+	if (port == COAP_DEFAULT_PORT) port++;	
     set_port(client, port);
 	set_host(client, host);
+    set_scheme( client, COAP_URI_SCHEME_COAPS);
+	coap_free(host->s);
+	coap_free(host);
 	return 0;
 }
 
@@ -920,7 +923,6 @@ pledge_connect_pledge(client_request_t *client){
 /* start new session to registrar with discovered host*/
   set_message_type(client, COAP_MESSAGE_CON);
 /* DTLS preparations */
-  set_scheme( client, COAP_URI_SCHEME_COAPS);
   static char cert_nm[] = PLEDGE_COMB; 
   static char ca_nm[] = CA_MASA_CRT;
   char *ca = ca_nm;
@@ -933,10 +935,10 @@ pledge_connect_pledge(client_request_t *client){
 	  coap_log(LOG_WARNING,"start_session DTLS to Registrar failed  \n");
 	  return 1;
   } 
-    uint16_t tid = coap_new_message_id (session);
-    coap_pdu_t *ping = NULL;
-    ping = coap_pdu_init(COAP_MESSAGE_CON, 0, tid, 0);  
-    if (ping != NULL){ 
+  uint16_t tid = coap_new_message_id (session);
+  coap_pdu_t *ping = NULL;
+  ping = coap_pdu_init(COAP_MESSAGE_CON, 0, tid, 0);  
+  if (ping != NULL){ 
       coap_tid_t tid = coap_send(session, ping);
       if (tid ==  COAP_INVALID_TID) return 1;
       return 0;
@@ -1128,8 +1130,9 @@ pledge_enroll_certificate(client_request_t *client){
 
 /* discover_node
  * discover the registrar or Join Proxy that may own the network */
-static uint8_t
+static coap_session_t *
 discover_node(client_request_t *client, coap_string_t *MC_coap){
+   coap_session_t *session = NULL;
    coap_string_t query   = {.length = 0, .s = NULL};
    coap_string_t path    = { .length =0 , .s = NULL}; 
    coap_string_t payload = { .length =0 , .s = NULL}; 
@@ -1147,12 +1150,15 @@ discover_node(client_request_t *client, coap_string_t *MC_coap){
   set_payload( client, &payload);
   set_method( client, COAP_REQUEST_GET);
   set_scheme( client, COAP_URI_SCHEME_COAP); 
-  if (coap_start_session(client) == NULL){
+  session = coap_start_session( client);
+  if (session == NULL){
 	  coap_log(LOG_WARNING," start-session discovery address illegal\n");
-	  return 0;
-  };
+	  return NULL;
+  }
   uri_options_off( client);
-  return coap_start_request( client, 0); 
+  if( coap_start_request( client, 0) == 0)
+         return session; 
+  else return NULL;
 }
 
 
@@ -1251,6 +1257,7 @@ usage( const char *program, const char *version) {
      "\t-J     \t\tJSON is used replacing CBOR using media-type application/voucher-cms+json\n"
      "\t-R     \t\tDiscover Registrar, is default \n"
      "\t-P     \t\tDiscover Join Proxy, if not set Registrar is discovered \n"
+     "\t-C     \t\tAfter enrollemnt the next enrollment cycle is continued \n"
      "\t-p port\t\tPort of the coap device server\n"
      "\t       \t\tPort+1 is used for coaps device server \n"
      "\t       \t\tPort+2 is used for the coap Join_proxy port \n"
@@ -1539,6 +1546,7 @@ const char *state_names[] = { "START", "DISCOVERED", "CONNECTED", "RV_DONE", "VS
 	                          "CERTIFIED", "ATTRIBUTES", "ENROLLED", "JOIN_PROXY", "END_state"};
   client_request_t *client = NULL;
   client_request_t *server = NULL;
+  uint8_t continuous = 0;       /* continuous is 1 leads to endless enrollemnts */
   char *group6 = NULL;
   char *group4 = NULL;
   coap_tick_t now;
@@ -1562,7 +1570,7 @@ const char *state_names[] = { "START", "DISCOVERED", "CONNECTED", "RV_DONE", "VS
   clock_offset = time(NULL);
   set_JSON(JSON_OFF); /* can be set on with -J option */  
 
-  while ((opt = getopt(argc, argv, "JRPd:p:b:l:E:v:h:")) != -1) {
+  while ((opt = getopt(argc, argv, "JRCPd:p:b:l:E:v:h:")) != -1) {
     switch (opt) {
     case 'b':
       cmdline_blocksize( client, optarg);
@@ -1597,7 +1605,10 @@ const char *state_names[] = { "START", "DISCOVERED", "CONNECTED", "RV_DONE", "VS
     case 'P' :
       discover_rt     = join_proxy_discover;
       discover_choice = join_proxy_discover;
-      break;      
+      break;     
+    case 'C' :
+      continuous = 1; 
+      break;
     case 'h' :           
     default:
       usage( argv[0], LIBCOAP_PACKAGE_VERSION );
@@ -1610,8 +1621,11 @@ const char *state_names[] = { "START", "DISCOVERED", "CONNECTED", "RV_DONE", "VS
   coap_set_log_level(log_level);
   /* all coap_local_nodes is used for discovery *
    * unless addres is specified in command line  */
-  coap_string_t *tmp_host = NULL;
-  uint16_t tmp_port = 0;
+  coap_string_t *regis_host = coap_malloc(sizeof(coap_string_t)); /* registrar host address */
+  memset(regis_host, 0, sizeof(coap_string_t));
+  coap_string_t  *tmp_host; /* holds address in client->host */
+  coap_session_t *discover_session = NULL;
+  uint16_t regis_port = 0;          /* registrar port */
   char acln[] = ALL_COAP_LOCAL_IPV4_NODES;
   coap_string_t MC_coap = {.s = (uint8_t *)acln,.length = strlen(acln)};
   set_message_type( client, COAP_MESSAGE_NON);
@@ -1621,16 +1635,19 @@ const char *state_names[] = { "START", "DISCOVERED", "CONNECTED", "RV_DONE", "VS
        exit(1);
      }
      tmp_host = get_host( client);
-     tmp_port = get_port( client);
-     if (tmp_host != NULL){
-		   if (tmp_host->s != NULL && tmp_host->length != 0){
-			   MC_coap.s = malloc(tmp_host->length);
-			   memcpy(MC_coap.s, tmp_host->s, tmp_host->length);
-			   MC_coap.length = tmp_host->length;
-/*  copied over address from comandline  */
+     regis_host->s = coap_malloc(tmp_host->length);
+     regis_host->length = tmp_host->length;
+     memcpy(regis_host->s , tmp_host->s, tmp_host->length);
+     regis_port = get_port( client);
+     if (regis_host != NULL){
+		   if (regis_host->s != NULL && regis_host->length != 0){
+			   MC_coap.s = malloc(regis_host->length);
+			   memcpy(MC_coap.s, regis_host->s, regis_host->length);
+			   MC_coap.length = regis_host->length;
 		   }
 	 }     
-  }
+  }  /*  regis_host contains address from command line  */
+     /*  regis_port contains port from command line     */
   set_certificates(client, int_cert_file, int_ca_file); /* set certificate files */ 
   set_certificates(server, int_cert_file, int_ca_file); /* set certificate files */ 
   int ok = pledge_get_contexts(client, server, addr_str, port_str);
@@ -1704,19 +1721,20 @@ const char *state_names[] = { "START", "DISCOVERED", "CONNECTED", "RV_DONE", "VS
           fprintf(stderr,"ED25519 is not supported by BRSKI \n");
           exit(0);
       }
-  }
+  }   
   uint16_t regis_join_port  = 0;
   pledge_state_t pledge_state = START;  
   uint8_t        step = 1;               /* increase pledge_state with step */
-  if (tmp_host == NULL){ /* registrar is not set in command line, so discover with MC */
-    discover_node( client, &MC_coap);  
-  } else { /* set registrar parameters  */
+  if (regis_host->s == NULL){ /* registrar address and port are not set in command line, so discover with MC */
+    discover_session = discover_node( client, &MC_coap); 
+  } else { /* set client host and port from regis_host and regis_port  */
     coap_string_t new_host;
-    new_host.length = tmp_host->length;
-    new_host.s = coap_malloc(tmp_host->length);
-    memcpy(new_host.s, tmp_host->s, tmp_host->length); /* const pointer */
+    new_host.length = regis_host->length;
+    new_host.s = coap_malloc(regis_host->length);
+    memcpy(new_host.s, regis_host->s, regis_host->length); /* const pointer */
     set_host( client, &new_host);
-    set_port( client, tmp_port);
+    set_port( client, regis_port);
+    regis_join_port = regis_port;
     coap_free(new_host.s);
     pledge_state = DISCOVERED;    /*  registrar has been set  in command line, no discovery  */
     make_ready();
@@ -1725,11 +1743,17 @@ const char *state_names[] = { "START", "DISCOVERED", "CONNECTED", "RV_DONE", "VS
     int result;
     int8_t ok = 0;
     if (is_ready()){ /* remote action is done */
-      fprintf(stderr," EDHOC_state is %d,   PLEDGE_state is %s \n", edhoc_state, state_names[pledge_state]);
+      fprintf(stderr," EDHOC_state is %d,   PLEDGE_state is %s,   number of malloc is %d \n",  edhoc_state, state_names[pledge_state],(int)coap_nr_of_alloc());
 	   switch (pledge_state) {
 		   case START:
 		     ok = verify_discovery( client);
-		     fprintf(stderr,"verify_discovery returns %d \n", ok);
+		     coap_session_release(discover_session);
+             /* set regis_port and regis_host from discovered client host and port */
+             tmp_host = get_host( client);
+             regis_host->s = coap_malloc(tmp_host->length);
+             regis_host->length = tmp_host->length;
+             memcpy(regis_host->s , tmp_host->s, tmp_host->length);             
+             regis_port = get_port(client);	
 		     if (ok != 0){     /* a registrar is not discovered */
                if (edhoc_required) set_port( client, COAP_DEFAULT_PORT); /* choose appropriate port   */
                else set_port( client, COAPS_DEFAULT_PORT);               /* coaps port for DTLS, coap port for edhoc */
@@ -1769,11 +1793,15 @@ const char *state_names[] = { "START", "DISCOVERED", "CONNECTED", "RV_DONE", "VS
 		     break;
 		   case RV_DONE:
 		     ok = pledge_arrived(masa_code, &masa_voucher);
-		     if (ok == 0)ok = pledge_status_voucher( client);
+		     if (ok == 0){
+				 ok = pledge_status_voucher( client);
+			 }
 		     break;
 		   case VS_DONE:
 		     ok = pledge_arrived(audit_code, &registrar_audit);
-		   	 if (ok == 0)ok = pledge_get_certificate( client);
+		   	 if (ok == 0){
+				 ok = pledge_get_certificate( client);
+			 }
 		   	 break;		       
 		   case CERTIFIED:
 		     ok = pledge_arrived(cert_code, &registrar_cert);
@@ -1783,24 +1811,30 @@ const char *state_names[] = { "START", "DISCOVERED", "CONNECTED", "RV_DONE", "VS
 		     if (cert_code >> 5 == 2)ok = pledge_enroll_certificate( client);
 		     break;
 		   case ENROLLED:
-		     ok = pledge_arrived(cert_code, &registrar_cert);
+		     ok = pledge_arrived(cert_code, &registrar_cert);	     
              if (ok == 0) ok = store_enrolled();
+		     coap_session_release(client->session);  /* close the DTLS session with Regisrar or Join Proxy */	                    
              if (ok == 0){
-		       coap_session_release(client->session);  /* close the DTLS session  */
-		       discover_rt = regis_port_discover;
+               if (continuous == 1){  
+                   set_host( client, regis_host);
+                   set_port( client, regis_port);
+                   pledge_state = DISCOVERED;    /*  registrar has been set in command line or by discovery  */
+                   goto cont; /* redo BRSKI enrollment loop */
+               } /* if continuous */  
+			   discover_rt = regis_port_discover;       /* discover Registrar port for join proxy state */
 		       set_port( client, COAP_DEFAULT_PORT);
-               discover_node( client, &MC_coap);
-               discover_rt = discover_choice;
-             } 
+               discover_node( client, &MC_coap);  
+               discover_rt = discover_choice;           /* specified Registrar or Join Proxy */  
+             } /* if ok == 0 */ 
              break;
-		   case JOIN_PROXY:
-		     ok = verify_discovery( client);
-		     regis_join_port = get_port( client);
-		     if (ok != 0) break;     /* a registrar is discovered */
+		   case JOIN_PROXY:	
+		     ok = verify_discovery( client);		     
+		     regis_join_port = get_port( client);		     
+		     if (ok != 0) break;     /* no registrar discovered , goto START*/
              prepare_join_resource( server->ctx);
+             set_scheme( client, COAP_URI_SCHEME_COAP);              
 		     ok = pledge_registrar_session( client);              /* is last state */
              coap_log(LOG_INFO," discovered join_port of registrar is %d\n", regis_join_port);
-             fprintf(stderr," discovered join_port of registrar is %d\n", regis_join_port);
 		     break;
 		   default:
 		     ok = 1;
@@ -1811,9 +1845,9 @@ const char *state_names[] = { "START", "DISCOVERED", "CONNECTED", "RV_DONE", "VS
 		   ok = 0;
 		   pledge_state = START; /* something went wrong; start again */
 	   }
-	   fprintf(stderr," in main, OK is %d    state is %s \n", ok, state_names[pledge_state]);	   
 	   ok =0;
 	   reset_ready();
+cont:  ok = 0;
     }  /* if is_ready */
     if (coap_fd != -1) {
       /*
@@ -1857,9 +1891,7 @@ const char *state_names[] = { "START", "DISCOVERED", "CONNECTED", "RV_DONE", "VS
        * result is time spent in coap_io_process()
        */
       result = coap_io_process( server->ctx, 1 );
-//      fprintf(stderr,"result 1 is %d  wait_ms is %d       ", result, wait_ms);
       result += coap_io_process( client->ctx, wait_ms );
-//      fprintf(stderr,"result 2 is %d wait_ms is %d\n",result, wait_ms);
     }
     if ( result < 0 ) {
       break;
