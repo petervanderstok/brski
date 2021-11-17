@@ -422,7 +422,7 @@ GM_insert_mbr_resource( coap_context_t  *ctx,
 void
 GM_hnd_post_grp(coap_context_t *ctx,
                 coap_resource_t *resource UNUSED_PARAM,
-                coap_session_t *session UNUSED_PARAM,
+                coap_session_t *session,
                 coap_pdu_t *request,
                 coap_binary_t *token UNUSED_PARAM,
                 coap_string_t *query UNUSED_PARAM,
@@ -445,7 +445,7 @@ GM_hnd_post_grp(coap_context_t *ctx,
     response, "Group does not exist");
     return;
   }
-  data = assemble_data(resource, request, response, &size);
+  data = assemble_data(session, request, response, &size);
   if ((data == NULL) | (size == 0))return;
   
     joinreq_t *jr = GM_join_request(&data);
@@ -559,7 +559,7 @@ GM_insert_grp_resource( coap_context_t  *ctx,
 void
 GM_hnd_post_manage(coap_context_t  *ctx,
              struct coap_resource_t *resource UNUSED_PARAM,
-             coap_session_t *session UNUSED_PARAM,
+             coap_session_t *session,
              coap_pdu_t *request,
              coap_binary_t *no_token UNUSED_PARAM,
              coap_string_t *query UNUSED_PARAM,
@@ -571,7 +571,7 @@ GM_hnd_post_manage(coap_context_t  *ctx,
   uint8_t* data = NULL;
   size_t size = 0;
   size_t gl = 3;
-  data = assemble_data(resource, request, response, &size);
+  data = assemble_data(session, request, response, &size);
   if ((data == NULL) | (size == 0))return;
   
     GM_group_t *grp = GM_manage_request(&data);
@@ -688,7 +688,7 @@ GM_hnd_post_manage(coap_context_t  *ctx,
 void
 GM_hnd_post_authz(coap_context_t  *ctx UNUSED_PARAM,
              struct coap_resource_t *resource UNUSED_PARAM,
-             coap_session_t *session UNUSED_PARAM,
+             coap_session_t *session,
              coap_pdu_t *request,
              coap_binary_t *no_token UNUSED_PARAM,
              coap_string_t *query UNUSED_PARAM,
@@ -704,7 +704,7 @@ GM_hnd_post_authz(coap_context_t  *ctx UNUSED_PARAM,
  * 2) authorization to join member
  */
   struct GM_group_t *current = NULL;
-  data = assemble_data(resource, request, response, &size);
+  data = assemble_data(session, request, response, &size);
   if ((data == NULL) | (size == 0))return;
   
     if (oauth_strip(&data, &nonce1, &key_enc) == 1){

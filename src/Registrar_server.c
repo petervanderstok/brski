@@ -220,128 +220,11 @@ handle_sigint(int signum UNUSED_PARAM) {
 static coap_string_t IP_RG = {.length =0, .s = NULL};
 static coap_string_t RG_identifier = {.length =0, .s = NULL};
 
-/* stores data for block2 return */
-static coap_string_t RG_ret_data = {
-	.length = 0,
-	.s = NULL
-};
-
 static status_t  *STATUS = NULL;
 static uint8_t multiple_pledge_entries = 1;       /* multiple enroll of a pledge is not allowed  */
 
 void set_multiple_pledge_entries(void){
   multiple_pledge_entries = 0;
-}
-
-
-/* regular server handler for blocked request
- * no block used: return 1
- * block used but not complete: return 2
- * block missing: return 3
- * all blocks received: return 0;
- * uses resource->userdata to store intermediate results
- * coap_handle_block
- */
- uint8_t
- coap_handle_block(
-           struct coap_resource_t *resource,
-           coap_pdu_t *request,
-           coap_pdu_t *response)
- {
-   coap_block_t block1;
-   size_t size;
-   uint8_t *data;
-   if (coap_get_block(request, COAP_OPTION_BLOCK1, &block1)) {
-    /* handle BLOCK1 */
-    if (coap_get_data(request, &size, &data) && (size > 0)) {
-      size_t offset = block1.num << (block1.szx + 4);
-      coap_string_t *value = (coap_string_t *)resource->user_data;
-      if (offset == 0) {
-        if (value) {
-          coap_delete_string(value);
-          value = NULL;
-        }
-      }
-      else if (offset >
-            (value ? value->length : 0)) {
-        /* Upload is not sequential - block missing */
-        response->code = COAP_RESPONSE_CODE(408);
-        return 3;
-      }
-      else if (offset <
-            (value ? value->length : 0)) {
-        /* Upload is not sequential - block duplicated */
-        goto just_respond;
-      }
-      /* Add in new block to end of current data */
-      coap_string_t *new_value = coap_new_string(offset + size);
-      memcpy (&new_value->s[offset], data, size);
-      new_value->length = offset + size;
-      if (value) {
-        memcpy (new_value->s, value->s, value->length);
-        coap_delete_string(value);
-      }
-      resource->user_data = new_value;
-    }
-    uint8_t ret = 0;
-just_respond:
-    if (block1.m) {
-      unsigned char buf[4];
-      response->code = COAP_RESPONSE_CODE(231);
-      coap_add_option(response, COAP_OPTION_BLOCK1, coap_encode_var_safe(buf, sizeof(buf),
-                                                  ((block1.num << 4) |
-                                                   (block1.m << 3) |
-                                                   block1.szx)),
-                  buf);
-      ret = 2;
-    } 
-    return ret;
-    }
-  return 1;
-}
-
-
-/* assemble_data
- * assemble data from received block in request
- * ok: returns data
- * nok: returns null
- */
-uint8_t *
-assemble_data(struct coap_resource_t *resource,
-           coap_pdu_t *request,
-           coap_pdu_t *response,
-           size_t *size)
-{
-  uint8_t ret = coap_handle_block(resource, request, response);
-  uint8_t * data = NULL;
-  if (ret == 1){
-  /* NOT BLOCK1 */  
-    if (!coap_get_data(request, size, &data) && (*size > 0)) {
-    /* Not a BLOCK1 and no data */
-       brski_error_return(COAP_RESPONSE_CODE(400), 
-                    response, "Cannot find request data");
-    }
-  }
-  else if (ret == 0){
-	/* BLOCK1 complete */
-	coap_string_t *value = (coap_string_t *)resource->user_data;
-	if (value != NULL){
-       data = value->s;
-       *size = value->length;
-    }else {
-	   data = NULL;
-	   *size = 0;
-    }
-  }
-  else if (ret == 3){
-  /* BLOCK1 with missing block  */
-    return NULL;
-  }
-  else if (ret == 2){
-	/* wait for more blocks  */
-	return (void *)-1;
-  }
-  return data;
 }
 
 
@@ -1112,6 +995,16 @@ find_status_session(coap_session_t *session){
 	return NULL;
 }
 
+
+/* find_status_any
+ * find status of pledge for any session; used for test purposes with option -M
+ */
+static  status_t *
+find_status_any(coap_session_t *session){
+	return STATUS;
+}
+
+
 /* unchain status
  * remove status from status queue
  *//*
@@ -1157,9 +1050,9 @@ find_status_request(voucher_t *request){
 
 static int8_t 
 insert_status(voucher_t *voucher_request, coap_string_t *request_voucher, coap_session_t *session){
-	status_t *status = find_status_request(voucher_request);
-	if (status != NULL) return 0;
-	status = coap_malloc(sizeof(status_t));
+    status_t *status = find_status_request(voucher_request);
+    if (status != NULL) return 0;
+    status = coap_malloc(sizeof(status_t));
 	memset(status, 0, sizeof(status_t));
 	status->next = STATUS;
 	STATUS = status;
@@ -1727,7 +1620,7 @@ call_MASA_ra(status_t *status, coap_string_t *answer, char *file_name){
  */
 void
 RG_hnd_post_vs(coap_context_t *ctx,
-                coap_resource_t *resource,
+                coap_resource_t *resource UNUSED_PARAM,
                 coap_session_t *session,
                 coap_pdu_t *request,
                 coap_binary_t *token,
@@ -1735,6 +1628,7 @@ RG_hnd_post_vs(coap_context_t *ctx,
                 coap_pdu_t *response)
 {
   uint8_t* data = NULL;
+  coap_string_t *RG_ret_data = NULL;
   size_t size = 0; 
   coap_opt_iterator_t opt_iter;
   coap_opt_t *opt = NULL;
@@ -1746,25 +1640,26 @@ RG_hnd_post_vs(coap_context_t *ctx,
 	if (coap_get_block(request, COAP_OPTION_BLOCK2, &block2)){	
 	  if (JSON_set() == JSON_ON)content_format = COAP_MEDIATYPE_APPLICATION_JSON;
 	  else content_format = COAP_MEDIATYPE_APPLICATION_CBOR;
-      coap_add_data_blocked_response(resource, session, request, response, token,
+	  ret_data_t *item = RG_corresponding_data(session);
+	  RG_ret_data = item->RG_ret_data;
+          coap_add_data_blocked_response(resource, session, request, response, token,
                                  content_format, -1,
-                                 RG_ret_data.length, RG_ret_data.s);
-     return;
+                                 RG_ret_data->length, RG_ret_data->s);
+         RG_verify_release(session, response);				 
+         return;
      } /* coap_get_block */
   } /* request */
 	
-  data = assemble_data(resource, request, response, &size);
+  data = assemble_data(session, request, response, &size);
   if (data == (void *)-1)return;  /* more blocks to arrive */
   srv_cnt++;
   srv_post_vs_cnt++;  
   /* RG_ret_data has been used for blocked response => can be liberated for new request */
-  if (RG_ret_data.s != NULL) coap_free(RG_ret_data.s);
-  RG_ret_data.s = NULL;
-  RG_ret_data.length = 0; 
-  if ((size < 1) | (data == NULL)){
-	  brski_error_return(COAP_RESPONSE_CODE(400), 
-      response, "log did not arrive\n");
-	  return;
+  RG_ret_data = RG_new_return_data(session);
+  if ((size < 1) || (data == NULL) || (RG_ret_data == NULL)){
+      brski_error_return(COAP_RESPONSE_CODE(400), 
+         response, "log did not arrive\n");
+      return;
   }
   opt = coap_check_option(request, COAP_OPTION_CONTENT_FORMAT, &opt_iter);
   if (opt){
@@ -1774,19 +1669,23 @@ RG_hnd_post_vs(coap_context_t *ctx,
   if (content_format == COAP_MEDIATYPE_APPLICATION_JSON) set_JSON(JSON_ON);
   else if (content_format == COAP_MEDIATYPE_APPLICATION_CBOR) set_JSON(JSON_OFF);
   else {
-	  brski_error_return(COAP_RESPONSE_CODE(404), 
-      response, "Illegal content format\n");
-	  return;
+    brski_error_return(COAP_RESPONSE_CODE(404), 
+        response, "Illegal content format\n");
+    return;
   }
   char file_name[] = REGIS_CLIENT_DER;    /* contains pledge certificate in DER */
   coap_string_t log = { .length = size, .s = data};
   /* log contains log data from pledge */
   /* session is identical because same DTLS session */
-  status_t *status = find_status_session(session);
+  status_t *status = NULL;
+  if (multiple_pledge_entries)
+      status = find_status_session(session);
+  else
+      status = find_status_any(session);
   if (status == NULL){
-	  brski_error_return(COAP_RESPONSE_CODE(404), 
-      response, "no status for this DTLS connection\n");
-	  return;
+      brski_error_return(COAP_RESPONSE_CODE(404), 
+           response, "no status for this DTLS connection\n");
+      return;
   }
   int8_t ok =0;
   if (JSON_set() == JSON_OFF)
@@ -1794,9 +1693,9 @@ RG_hnd_post_vs(coap_context_t *ctx,
   else
         ok = brski_json_readstatus(&log, status); 
   if (ok != 0){
-  	  brski_error_return(COAP_RESPONSE_CODE(404), 
-      response, "log cannot be parsed \n");
-	  return;
+      brski_error_return(COAP_RESPONSE_CODE(404), 
+          response, "log cannot be parsed \n");
+      return;
   }
   if (status->acceptable != VOUCHER_ACCEPTABLE){
 	  brski_error_return(COAP_RESPONSE_CODE(404), 
@@ -1809,15 +1708,16 @@ RG_hnd_post_vs(coap_context_t *ctx,
             coap_log(LOG_DEBUG, "message_handler: error sending intermediate acknowledgement\n");
   response->type = COAP_MESSAGE_CON;	    
   /* invoke MASA */
-  int16_t http_resp = call_MASA_ra( status, &RG_ret_data, file_name);
+  int16_t http_resp = call_MASA_ra( status, RG_ret_data, file_name);
   if (http_resp > 299){
 	  brski_error_return(COAP_RESPONSE_CODE(http_resp),response, "call_MASA_ra returned error\n");
 	  return;
   }
   coap_add_data_blocked_response(resource, session, request, response, token,
                                  content_format, -1,
-                                 RG_ret_data.length, RG_ret_data.s);  
-   fprintf(stderr," Post_vs server  tid %04x, invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", response->tid, srv_post_vs_cnt, srv_cnt, (int)coap_nr_of_alloc());                            
+                                 RG_ret_data->length, RG_ret_data->s); 
+  RG_verify_release(session, response);				  
+  fprintf(stderr," Post_vs server  tid %04x, invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", response->tid, srv_post_vs_cnt, srv_cnt, (int)coap_nr_of_alloc());                            
 }
 
 /*
@@ -1827,13 +1727,14 @@ RG_hnd_post_vs(coap_context_t *ctx,
  */
 void
 RG_hnd_get_es(coap_context_t *ctx UNUSED_PARAM,
-                coap_resource_t *resource,
+                coap_resource_t *resource UNUSED_PARAM,
                 coap_session_t *session,
                 coap_pdu_t *request,
                 coap_binary_t *token,
                 coap_string_t *query UNUSED_PARAM,
                 coap_pdu_t *response)
 {
+  coap_string_t *RG_ret_data = NULL;
   srv_cnt++;
   srv_get_es_cnt++;
   uint8_t* data = NULL;
@@ -1841,28 +1742,30 @@ RG_hnd_get_es(coap_context_t *ctx UNUSED_PARAM,
 		/* check whether data need to be returend */
   if (request) {
 	coap_block_t block2 = { 0, 0, 0};
-	if (coap_get_block(request, COAP_OPTION_BLOCK2, &block2)){	
-      coap_add_data_blocked_response(resource, session, request, response, token,
+	if (coap_get_block(request, COAP_OPTION_BLOCK2, &block2)){
+	  ret_data_t *item = RG_corresponding_data(session);
+	  RG_ret_data = item->RG_ret_data;	  	
+	  coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_CSRATTRS, -1,
-                                 RG_ret_data.length, RG_ret_data.s);
-     return;
-     } /* coap_get_block */
+                                 RG_ret_data->length, RG_ret_data->s);
+	  RG_verify_release(session, response);			 
+          return;
+        } /* coap_get_block */
   } /* request */
 	
-  data = assemble_data(resource, request, response, &size);
+  data = assemble_data(session, request, response, &size);
   if (data == (void *)-1)return;  /* more blocks to arrive */ 
   /* RG_ret_data has been used for blocked response => can be liberated for new request */
-  if (RG_ret_data.s != NULL) coap_free(RG_ret_data.s);
-  RG_ret_data.s = NULL;
-  RG_ret_data.length = 0;   
+  RG_ret_data = RG_new_return_data(session);
   response->code = COAP_RESPONSE_CODE(205); 
-  int8_t ok = brski_cbor_voucherstatus(&RG_ret_data);
+  int8_t ok = brski_cbor_voucherstatus(RG_ret_data);
   if (ok != 0){
-	  brski_error_return(COAP_RESPONSE_CODE(404), 
-      response, "enroll status data not available\n");
-	  return;
+      brski_error_return(COAP_RESPONSE_CODE(404), 
+         response, "enroll status data not available\n");
+      return;
   }
-  response->code = COAP_RESPONSE_CODE(203);   
+  response->code = COAP_RESPONSE_CODE(203);  
+  RG_verify_release(session, response);		 
   fprintf(stderr," post_es server tid %04x, invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", response->tid, srv_get_es_cnt, srv_cnt, (int)coap_nr_of_alloc());
 }
 
@@ -1873,7 +1776,7 @@ RG_hnd_get_es(coap_context_t *ctx UNUSED_PARAM,
  */
 void
 RG_hnd_post_rv(coap_context_t *ctx,
-                coap_resource_t *resource,
+                coap_resource_t *resource UNUSED_PARAM,
                 coap_session_t *session,
                 coap_pdu_t *request,
                 coap_binary_t *token,
@@ -1881,6 +1784,7 @@ RG_hnd_post_rv(coap_context_t *ctx,
                 coap_pdu_t *response)
 {
   uint8_t* data = NULL;
+  coap_string_t *RG_ret_data = NULL;  
   size_t size = 0; 
   coap_opt_iterator_t opt_iter;
   coap_opt_t *opt = NULL;
@@ -1893,22 +1797,24 @@ RG_hnd_post_rv(coap_context_t *ctx,
 	if (coap_get_block(request, COAP_OPTION_BLOCK2, &block2)){
 	  if (JSON_set() == JSON_ON)content_format = COAP_MEDIATYPE_APPLICATION_JSON;
 	  else content_format = COAP_MEDIATYPE_APPLICATION_CBOR;
-      coap_add_data_blocked_response(resource, session, request, response, token,
+	  ret_data_t *item = RG_corresponding_data(session);
+	  RG_ret_data = item->RG_ret_data;	  
+          coap_add_data_blocked_response(resource, session, request, response, token,
                                  content_format, -1,
-                                 RG_ret_data.length, RG_ret_data.s);
-     return;
-     } /* coap_get_block */
+                                 RG_ret_data->length, RG_ret_data->s);
+          RG_verify_release(session, response);				 
+          return;
+        } /* coap_get_block */
   } /* request */
-  data = assemble_data(resource, request, response, &size);
+  data = assemble_data(session, request, response, &size);
+  fprintf(stderr,"est/rv data is %p \n", (void *)data);
   if (data == (void *)-1)return;  /* more blocks to arrive */
   srv_cnt++;
   srv_post_rv_cnt++; 
   /* RG_ret_data has been used for blocked response => can be liberated for new request */
-  if (RG_ret_data.s != NULL) coap_free(RG_ret_data.s);
-  RG_ret_data.s = NULL;
-  RG_ret_data.length = 0; 
+  RG_ret_data = RG_new_return_data(session);
   char comb_file[] = REGIS_SRV_COMB;  
-  if ((data == NULL) || (size == 0)){
+  if ((data == NULL) || (size == 0) || (RG_ret_data == NULL)){
 	  brski_error_return(COAP_RESPONSE_CODE(404), 
       response, "Did not find request data\n");
 	  return;
@@ -2014,7 +1920,7 @@ RG_hnd_post_rv(coap_context_t *ctx,
             coap_log(LOG_DEBUG, "message_handler: error sending intermediate acknowledgement\n");
   response->type = COAP_MESSAGE_CON;
   /* continue return message */
-  int16_t http_resp = call_MASA_rv(&masa_request_sign, &RG_ret_data, file_name);
+  int16_t http_resp = call_MASA_rv(&masa_request_sign, RG_ret_data, file_name);
   if (http_resp > 299){
 	  coap_free(masa_request_sign.s);
 	  brski_error_return(COAP_RESPONSE_CODE(http_resp),response, "call_MASA_rv returned error\n");
@@ -2024,7 +1930,8 @@ RG_hnd_post_rv(coap_context_t *ctx,
   fprintf(stderr," Post_rv server  tid %04x, invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", response->tid, srv_post_rv_cnt, srv_cnt, (int)coap_nr_of_alloc());  
   coap_add_data_blocked_response(resource, session, request, response, token,
                                  content_format, -1,
-                                 RG_ret_data.length, RG_ret_data.s);
+                                 RG_ret_data->length, RG_ret_data->s);
+  RG_verify_release(session, response);				 
 }
 
 /*
@@ -2034,7 +1941,7 @@ RG_hnd_post_rv(coap_context_t *ctx,
  */
 void
 RG_hnd_get_crts(coap_context_t *ctx UNUSED_PARAM,
-                coap_resource_t *resource,
+                coap_resource_t *resource UNUSED_PARAM,
                 coap_session_t *session,
                 coap_pdu_t *request,
                 coap_binary_t *token,
@@ -2042,29 +1949,31 @@ RG_hnd_get_crts(coap_context_t *ctx UNUSED_PARAM,
                 coap_pdu_t *response)
 {
   uint8_t* data = NULL;
+  coap_string_t *RG_ret_data = NULL;  
   size_t size = 0; 
 		/* check whether data need to be returend */
   if (request) {
 	coap_block_t block2 = { 0, 0, 0};
-	if (coap_get_block(request, COAP_OPTION_BLOCK2, &block2)){	
-      coap_add_data_blocked_response(resource, session, request, response, token,
+	if (coap_get_block(request, COAP_OPTION_BLOCK2, &block2)){
+	  ret_data_t *item = RG_corresponding_data(session);
+	  RG_ret_data = item->RG_ret_data;	  	
+          coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_PKCS7_CERTS, -1,
-                                 RG_ret_data.length, RG_ret_data.s);
-     return;
-     } /* coap_get_block */
+                                 RG_ret_data->length, RG_ret_data->s);
+          RG_verify_release(session, response);				 
+          return;
+        } /* coap_get_block */
   } /* request */
 	
-  data = assemble_data(resource, request, response, &size);
+  data = assemble_data(session, request, response, &size);
   if (data == (void *)-1)return;  /* more blocks to arrive */
   srv_cnt++;
   srv_get_crts_cnt++;  
   /* RG_ret_data has been used for blocked response => can be liberated for new request */
-  if (RG_ret_data.s != NULL) coap_free(RG_ret_data.s);
-  RG_ret_data.s = NULL;
-  RG_ret_data.length = 0; 
+  RG_ret_data = RG_new_return_data(session);
   response->code = COAP_RESPONSE_CODE(205); 
  
-  int ok = brski_return_certificate(&RG_ret_data);
+  int ok = brski_return_certificate(RG_ret_data);
   if (ok != 0){
 	  response->code = COAP_RESPONSE_CODE(403);
 	  coap_log(LOG_ERR," certficate cannot be returned \n");
@@ -2072,7 +1981,8 @@ RG_hnd_get_crts(coap_context_t *ctx UNUSED_PARAM,
   }
   coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_PKCS7_CERTS, -1,
-                                 RG_ret_data.length, RG_ret_data.s); 
+                                 RG_ret_data->length, RG_ret_data->s); 
+  RG_verify_release(session, response);				 
   fprintf(stderr," get_crts server tid %04x, invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", response->tid, srv_get_crts_cnt, srv_cnt, (int)coap_nr_of_alloc());                                                   
 }
 
@@ -2083,7 +1993,7 @@ RG_hnd_get_crts(coap_context_t *ctx UNUSED_PARAM,
  */
 void
 RG_hnd_post_sen(coap_context_t *ctx UNUSED_PARAM,
-                coap_resource_t *resource,
+                coap_resource_t *resource UNUSED_PARAM,
                 coap_session_t *session,
                 coap_pdu_t *request,
                 coap_binary_t *token,
@@ -2091,6 +2001,7 @@ RG_hnd_post_sen(coap_context_t *ctx UNUSED_PARAM,
                 coap_pdu_t *response)
 {
   uint8_t* data = NULL;
+  coap_string_t *RG_ret_data = NULL;  
   size_t size = 0; 
   coap_opt_iterator_t opt_iter;
   coap_opt_t *opt = NULL;
@@ -2099,22 +2010,23 @@ RG_hnd_post_sen(coap_context_t *ctx UNUSED_PARAM,
 		/* check whether data need to be returend */
   if (request) {
 	coap_block_t block2 = { 0, 0, 0};
-	if (coap_get_block(request, COAP_OPTION_BLOCK2, &block2)){	
-      coap_add_data_blocked_response(resource, session, request, response, token,
+	if (coap_get_block(request, COAP_OPTION_BLOCK2, &block2)){
+	  ret_data_t *item = RG_corresponding_data(session);
+	  RG_ret_data = item->RG_ret_data;	
+          coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_PKCS7_CERTS, -1,
-                                 RG_ret_data.length, RG_ret_data.s);
-     return;
-     } /* coap_get_block */
+                                 RG_ret_data->length, RG_ret_data->s);
+	  RG_verify_release(session, response);			 
+          return;
+        } /* coap_get_block */
   } /* request */
-  data = assemble_data(resource, request, response, &size);
+  data = assemble_data(session, request, response, &size);
   if (data == (void *)-1)return;  /* more blocks to arrive */
   srv_cnt++;
   srv_post_sen_cnt++;  
    /* RG_ret_data has been used for blocked response => can be liberated for new request */
-  if (RG_ret_data.s != NULL) coap_free(RG_ret_data.s);
-  RG_ret_data.s = NULL;
-  RG_ret_data.length = 0; 
-  if ((data == NULL) | (size == 0)){
+  RG_ret_data = RG_new_return_data(session);
+  if ((data == NULL) || (size == 0) || (RG_ret_data == NULL)){
 	  brski_error_return(COAP_RESPONSE_CODE(400), 
       response, "Did not find request data\n");
 	  return;
@@ -2130,7 +2042,11 @@ RG_hnd_post_sen(coap_context_t *ctx UNUSED_PARAM,
 	  return;
   }
   /* data points to csr with size */
-  status_t *status = find_status_session(session);
+  status_t *status = NULL;
+  if (multiple_pledge_entries)
+      status = find_status_session(session);
+  else
+      status = find_status_any(session);
   if (status == NULL){
 	  brski_error_return(COAP_RESPONSE_CODE(400), 
       response, "Did not find status belonging to session\n");
@@ -2144,7 +2060,7 @@ RG_hnd_post_sen(coap_context_t *ctx UNUSED_PARAM,
   response->code = COAP_RESPONSE_CODE(205); 
 
 /* create certificate  */
-  int8_t ok = brski_create_crt(&RG_ret_data, data, size);
+  int8_t ok = brski_create_crt(RG_ret_data, data, size);
   if (ok != 0){
 	  brski_error_return(COAP_RESPONSE_CODE(404), 
       response, "CRT cannot be created\n");
@@ -2152,7 +2068,8 @@ RG_hnd_post_sen(coap_context_t *ctx UNUSED_PARAM,
   }
   coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_PKCS7_CERTS, -1,
-                                 RG_ret_data.length, RG_ret_data.s); 
+                                 RG_ret_data->length, RG_ret_data->s); 
+  RG_verify_release(session, response);				 
   fprintf(stderr," post_sen server tid %04x, invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", response->tid, srv_post_sen_cnt, srv_cnt, (int)coap_nr_of_alloc());                                                         
 }
 
@@ -2163,7 +2080,7 @@ RG_hnd_post_sen(coap_context_t *ctx UNUSED_PARAM,
  */
 void
 RG_hnd_post_sren(coap_context_t *ctx UNUSED_PARAM,
-                coap_resource_t *resource,
+                coap_resource_t *resource UNUSED_PARAM,
                 coap_session_t *session,
                 coap_pdu_t *request,
                 coap_binary_t *token,
@@ -2171,49 +2088,56 @@ RG_hnd_post_sren(coap_context_t *ctx UNUSED_PARAM,
                 coap_pdu_t *response)
 {
   uint8_t* data = NULL;
+  coap_string_t *RG_ret_data = NULL;  
   size_t size = 0; 
 		/* check whether data need to be returend */
   if (request) {
 	coap_block_t block2 = { 0, 0, 0};
-	if (coap_get_block(request, COAP_OPTION_BLOCK2, &block2)){	
-      coap_add_data_blocked_response(resource, session, request, response, token,
+	if (coap_get_block(request, COAP_OPTION_BLOCK2, &block2)){
+	  ret_data_t *item = RG_corresponding_data(session);
+	  RG_ret_data = item->RG_ret_data;	  	
+          coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_PKCS7_CERTS, -1,
-                                 RG_ret_data.length, RG_ret_data.s);
-     return;
-     } /* coap_get_block */
+                                 RG_ret_data->length, RG_ret_data->s);
+          RG_verify_release(session, response);				 
+          return;
+        } /* coap_get_block */
   } /* request */
 	
-  data = assemble_data(resource, request, response, &size);
+  data = assemble_data(session, request, response, &size);
   if (data == (void *)-1)return;  /* more blocks to arrive */  
   srv_cnt++;
   srv_post_sren_cnt++; 
   /* RG_ret_data has been used for blocked response => can be liberated for new request */
-  if (RG_ret_data.s != NULL) coap_free(RG_ret_data.s);
-  RG_ret_data.s = NULL;
-  RG_ret_data.length = 0; 
-  if ((data == NULL) | (size == 0)){
+  RG_ret_data = RG_new_return_data(session);
+  if ((data == NULL) || (size == 0) || (RG_ret_data == NULL)){
 	  brski_error_return(COAP_RESPONSE_CODE(400), 
       response, "Did not find request data\n");
 	  return;
   }
    /* data points to csr with size */
-  status_t *status = find_status_session(session);
+  status_t *status = NULL;
+  if (multiple_pledge_entries)
+      status = find_status_session(session);
+  else 
+      status = find_status_any(session);
   if (status->acceptable == VOUCHER_REJECTED){
 	  brski_error_return(COAP_RESPONSE_CODE(404), 
       response, "Voucher is not acceptable\n");
 	  return;
   }
   response->code = COAP_RESPONSE_CODE(205); 
-  int8_t ok = brski_create_crt(&RG_ret_data, data, size);
+  int8_t ok = brski_create_crt(RG_ret_data, data, size);
   if (ok != 0){
-	  brski_error_return(COAP_RESPONSE_CODE(404), 
-      response, "CRT cannot be created\n");
-	  return;
+      brski_error_return(COAP_RESPONSE_CODE(404), 
+            response, "CRT cannot be created\n");
+      return;
   }
-  if (RG_ret_data.s == NULL) response->code = COAP_RESPONSE_CODE(400);
+  if (RG_ret_data->s == NULL) response->code = COAP_RESPONSE_CODE(400);
   coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_PKCS7_CERTS, -1,
-                                 RG_ret_data.length, RG_ret_data.s);
+                                 RG_ret_data->length, RG_ret_data->s);
+  RG_verify_release(session, response);				 
   fprintf(stderr," post_sren server tid %04x, invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", response->tid, srv_post_sren_cnt, srv_cnt, (int)coap_nr_of_alloc());                               
 }
 
@@ -2224,7 +2148,7 @@ RG_hnd_post_sren(coap_context_t *ctx UNUSED_PARAM,
  */
 void
 RG_hnd_post_skg(coap_context_t *ctx UNUSED_PARAM,
-                coap_resource_t *resource,
+                coap_resource_t *resource UNUSED_PARAM,
                 coap_session_t *session,
                 coap_pdu_t *request,
                 coap_binary_t *token,
@@ -2232,6 +2156,7 @@ RG_hnd_post_skg(coap_context_t *ctx UNUSED_PARAM,
                 coap_pdu_t *response)
 {
   uint8_t *data = NULL;
+  coap_string_t *RG_ret_data = NULL;  
   size_t size = 0; 
   uint8_t *response1 = NULL;
   size_t resp1_len= 0;
@@ -2239,24 +2164,25 @@ RG_hnd_post_skg(coap_context_t *ctx UNUSED_PARAM,
   size_t resp2_len= 0;
 		/* check whether data need to be returend */
   if (request) {
-	coap_block_t block2 = { 0, 0, 0};
-	if (coap_get_block(request, COAP_OPTION_BLOCK2, &block2)){	
-      coap_add_data_blocked_response(resource, session, request, response, token,
+      coap_block_t block2 = { 0, 0, 0};
+      if (coap_get_block(request, COAP_OPTION_BLOCK2, &block2)){
+	  ret_data_t *item = RG_corresponding_data(session);
+	  RG_ret_data = item->RG_ret_data;		
+	  coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_MULTIPART_CORE, -1,
-                                 RG_ret_data.length, RG_ret_data.s);
-     return;
-     } /* coap_get_block */
+                                 RG_ret_data->length, RG_ret_data->s);
+	  RG_verify_release(session, response);			 
+          return;
+        } /* coap_get_block */
   } /* request */
 	
-  data = assemble_data(resource, request, response, &size);
+  data = assemble_data(session, request, response, &size);
   if (data == (void *)-1)return;  /* more blocks to arrive */ 
   srv_cnt++;
   srv_post_skg_cnt++;   
   /* RG_ret_data has been used for blocked response => can be liberated for new request */
-  if (RG_ret_data.s != NULL) coap_free(RG_ret_data.s);
-  RG_ret_data.s = NULL;
-  RG_ret_data.length = 0;  
-  if ((data == NULL) | (size == 0)){
+  RG_ret_data = RG_new_return_data(session);
+  if ((data == NULL) || (size == 0) || (RG_ret_data == NULL)){
 	  brski_error_return(COAP_RESPONSE_CODE(400), 
       response, "Did not find request data\n");
 	  return;
@@ -2269,10 +2195,10 @@ RG_hnd_post_skg(coap_context_t *ctx UNUSED_PARAM,
   if (resp2_len > 0)resp2_len--;
   if (resp1_len != 0 && resp2_len != 0){
     response->code = COAP_RESPONSE_CODE(204); 
-    RG_ret_data.length = resp1_len + resp2_len + 20;
-    if (RG_ret_data.s != NULL) coap_free(RG_ret_data.s);
-    RG_ret_data.s = coap_malloc(RG_ret_data.length);
-    uint8_t *buf = RG_ret_data.s;
+    RG_ret_data->length = resp1_len + resp2_len + 20;
+    if (RG_ret_data->s != NULL) coap_free(RG_ret_data->s);
+    RG_ret_data->s = coap_malloc(RG_ret_data->length);
+    uint8_t *buf = RG_ret_data->s;
     size_t  nr = 0;
     nr += cbor_put_array(&buf, 4);
     nr += cbor_put_number(&buf, COAP_MEDIATYPE_APPLICATION_PKCS8);
@@ -2281,19 +2207,20 @@ RG_hnd_post_skg(coap_context_t *ctx UNUSED_PARAM,
     nr += cbor_put_number(&buf, COAP_MEDIATYPE_APPLICATION_PKCS7_CERTS);
     nr += cbor_put_bytes(&buf, response2, resp2_len);
     coap_free(response2);
-    RG_ret_data.length = nr;
+    RG_ret_data->length = nr;
   }
   else {
 	if (resp1_len > 0)coap_free(response1);
 	if (resp2_len > 0)coap_free(response2);
 	response->code = COAP_RESPONSE_CODE(404);
-	RG_ret_data.length =  0;
-	if (RG_ret_data.s != NULL) coap_free(RG_ret_data.s);
-	RG_ret_data.s = NULL;
+	RG_ret_data->length =  0;
+	if (RG_ret_data->s != NULL) coap_free(RG_ret_data->s);
+	RG_ret_data->s = NULL;
   }
   coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_MULTIPART_CORE, -1,
-                                 RG_ret_data.length, RG_ret_data.s);
+                                 RG_ret_data->length, RG_ret_data->s);
+  RG_verify_release(session, response);				 
   fprintf(stderr," post-skg server  tid %04x, invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", response->tid, srv_post_skg_cnt, srv_cnt, (int)coap_nr_of_alloc());                         
 }
 
@@ -2304,7 +2231,7 @@ RG_hnd_post_skg(coap_context_t *ctx UNUSED_PARAM,
  */
 void
 RG_hnd_get_att(coap_context_t *ctx UNUSED_PARAM,
-                coap_resource_t *resource,
+                coap_resource_t *resource UNUSED_PARAM,
                 coap_session_t *session,
                 coap_pdu_t *request,
                 coap_binary_t *token,
@@ -2312,34 +2239,42 @@ RG_hnd_get_att(coap_context_t *ctx UNUSED_PARAM,
                 coap_pdu_t *response)
 {
   uint8_t* data = NULL;
+  coap_string_t *RG_ret_data = NULL;  
   size_t size = 0; 
 		/* check whether data need to be returend */
   if (request) {
 	coap_block_t block2 = { 0, 0, 0};
-	if (coap_get_block(request, COAP_OPTION_BLOCK2, &block2)){	
-      coap_add_data_blocked_response(resource, session, request, response, token,
+	if (coap_get_block(request, COAP_OPTION_BLOCK2, &block2)){
+	  ret_data_t *item = RG_corresponding_data(session);
+	  RG_ret_data = item->RG_ret_data;	  	
+          coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_CSRATTRS, -1,
-                                 RG_ret_data.length, RG_ret_data.s);
-     return;
-     } /* coap_get_block */
+                                 RG_ret_data->length, RG_ret_data->s);
+	  RG_verify_release(session, response);			 
+          return;
+        } /* coap_get_block */
   } /* request */
   
-  data = assemble_data(resource, request, response, &size);
+  data = assemble_data(session, request, response, &size);
   if (data == (void *)-1)return;  /* more blocks to arrive */
   srv_cnt++;
   srv_get_att_cnt++;  
   /* RG_ret_data has been used for blocked response => can be liberated for new request */
-  if (RG_ret_data.s != NULL) coap_free(RG_ret_data.s);
-  RG_ret_data.s = NULL;
-  RG_ret_data.length = 0; 
+  RG_ret_data = RG_new_return_data(session);
+  if (RG_ret_data == NULL){
+    brski_error_return(COAP_RESPONSE_CODE(400), 
+      response, "Did not find request data\n");
+    return;
+  }
   response->code = COAP_RESPONSE_CODE(205); 
   char file[] = CSR_ATTRIBUTES;
-  RG_ret_data.s = read_file_mem(file, &RG_ret_data.length); 
-  if (RG_ret_data.length > 0)RG_ret_data.length--;
+  RG_ret_data->s = read_file_mem(file, &RG_ret_data->length); 
+  if (RG_ret_data->length > 0)RG_ret_data->length--;
   response->code = COAP_RESPONSE_CODE(201); 
   coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_CSRATTRS, -1,
-                                 RG_ret_data.length, RG_ret_data.s);
+                                 RG_ret_data->length, RG_ret_data->s);
+  RG_verify_release(session, response);				 
   fprintf(stderr," get_att server tid %04x, invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", response->tid, srv_get_att_cnt, srv_cnt, (int)coap_nr_of_alloc());                            
 }
 
@@ -2352,13 +2287,14 @@ RG_hnd_get_att(coap_context_t *ctx UNUSED_PARAM,
  */
 void
 RG_hnd_proxy(coap_context_t *ctx UNUSED_PARAM,
-                coap_resource_t *resource,
+                coap_resource_t *resource UNUSED_PARAM,
                 coap_session_t *session,
                 coap_pdu_t *request,
                 coap_binary_t *token,
                 coap_string_t *query UNUSED_PARAM,
                 coap_pdu_t *response)
 {
+  coap_string_t *RG_ret_data = NULL;  
   srv_cnt++;
   srv_proxy_cnt++;
   char  resp[] = "I am a brski join_proxy ";
@@ -2369,26 +2305,26 @@ RG_hnd_proxy(coap_context_t *ctx UNUSED_PARAM,
 		/* check whether data need to be returend */
   if (request) {
 	coap_block_t block2 = { 0, 0, 0};
-	if (coap_get_block(request, COAP_OPTION_BLOCK2, &block2)){	
-      coap_add_data_blocked_response(resource, session, request, response, token,
+	if (coap_get_block(request, COAP_OPTION_BLOCK2, &block2)){
+	  ret_data_t *item = RG_corresponding_data(session);
+	  RG_ret_data = item->RG_ret_data;	  	
+          coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_CSRATTRS, -1,
-                                 RG_ret_data.length, RG_ret_data.s);
-     return;
-     } /* coap_get_block */
+                                 RG_ret_data->length, RG_ret_data->s);
+	  RG_verify_release(session, response);			 
+          return;
+        } /* coap_get_block */
   } /* request */
   
-  data = assemble_data(resource, request, response, &size);
+  data = assemble_data(session, request, response, &size);
   if (data == (void *)-1)return;  /* more blocks to arrive */
   srv_cnt++;
   srv_proxy_cnt++; 
-  /* RG_ret_data has been used for blocked response => can be liberated for new request */
-  if (RG_ret_data.s != NULL) coap_free(RG_ret_data.s);
-  RG_ret_data.s = NULL;
-  RG_ret_data.length = 0;    
   response->code = COAP_RESPONSE_CODE(201);  
   coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_CSRATTRS, -1,
                                  data_len, resp_data); 
+  RG_verify_release(session, response);
   fprintf(stderr," Proxy server invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", srv_proxy_cnt, srv_cnt, (int)coap_nr_of_alloc());                                                         
 }
 

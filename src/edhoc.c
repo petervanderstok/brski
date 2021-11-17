@@ -3005,7 +3005,7 @@ hnd_post_edhoc(coap_context_t  *ctx UNUSED_PARAM,
      } /* coap_get_block */
   } /* request */
 	
-  data = assemble_data(resource, request, response, &size);
+  data = assemble_data(session, request, response, &size);
   if (data == (void *)-1)return;  /* more blocks to arrive */
   if ((data == NULL) | (size == 0)){
 	  edhoc_error_return('R',COAP_RESPONSE_CODE(400), 

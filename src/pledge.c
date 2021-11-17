@@ -245,117 +245,6 @@ pledge_arrived(uint16_t code, coap_string_t *arrived){
 	return 1;
 }
 
-/* regular server handler for blocked request
- * no block used: return 1
- * block used but not complete: return 2
- * block missing: return 3
- * all blocks received: return 0;
- * uses resource->userdata to store intermediate results
- * coap_handle_block
- */
- uint8_t
- coap_handle_block(
-           struct coap_resource_t *resource,
-           coap_pdu_t *request,
-           coap_pdu_t *response)
- {
-   coap_block_t block1;
-   size_t size;
-   uint8_t *data;
-   if (coap_get_block(request, COAP_OPTION_BLOCK1, &block1)) {
-    /* handle BLOCK1 */
-    if (coap_get_data(request, &size, &data) && (size > 0)) {
-      size_t offset = block1.num << (block1.szx + 4);
-      coap_string_t *value = (coap_string_t *)resource->user_data;
-      if (offset == 0) {
-        if (value) {
-          coap_delete_string(value);
-          value = NULL;
-        }
-      }
-      else if (offset >
-            (value ? value->length : 0)) {
-        /* Upload is not sequential - block missing */
-        response->code = COAP_RESPONSE_CODE(408);
-        return 3;
-      }
-      else if (offset <
-            (value ? value->length : 0)) {
-        /* Upload is not sequential - block duplicated */
-        goto just_respond;
-      }
-      /* Add in new block to end of current data */
-      coap_string_t *new_value = coap_new_string(offset + size);
-      memcpy (&new_value->s[offset], data, size);
-      new_value->length = offset + size;
-      if (value) {
-        memcpy (new_value->s, value->s, value->length);
-        coap_delete_string(value);
-      }
-      resource->user_data = new_value;
-    }
-    uint8_t ret = 0;
-just_respond:
-    if (block1.m) {
-      unsigned char buf[4];
-      response->code = COAP_RESPONSE_CODE(231);
-      coap_add_option(response, COAP_OPTION_BLOCK1, coap_encode_var_safe(buf, sizeof(buf),
-                                                  ((block1.num << 4) |
-                                                   (block1.m << 3) |
-                                                   block1.szx)),
-                  buf);
-      ret = 2;
-    } 
-    return ret;
-    }
-  return 1;
-}
-
-
-/* assemble_data
- * assemble data from received block in request
- * ok: returns data
- * nok: returns null
- */
-uint8_t *
-assemble_data(struct coap_resource_t *resource,
-           coap_pdu_t *request,
-           coap_pdu_t *response,
-           size_t *size)
-{
-  uint8_t ret = coap_handle_block(resource, request, response);
-  uint8_t * data = NULL;
-  if (ret == 1){
-  /* NOT BLOCK1 */  
-    if (!coap_get_data(request, size, &data) && (*size > 0)) {
-    /* Not a BLOCK1 and no data */
-       brski_error_return(COAP_RESPONSE_CODE(400), 
-                    response, "Cannot find request data");
-    }
-  }
-  else if (ret == 0){
-	/* BLOCK1 complete */
-	coap_string_t *value = (coap_string_t *)resource->user_data;
-	if (value != NULL){
-       data = value->s;
-       *size = value->length;
-    }else {
-	   data = NULL;
-	   *size = 0;
-    }
-  }
-  else if (ret == 3){
-  /* BLOCK1 with missing block  */
-    return NULL;
-  }
-  else if (ret == 2){
-	/* wait for more blocks  */
-	return (void *)-1;
-  }
-  return data;
-}
-
-
 static void
 hnd_get_index(coap_context_t *ctx UNUSED_PARAM,
               struct coap_resource_t *resource,
@@ -1813,7 +1702,7 @@ const char *state_names[] = { "START", "DISCOVERED", "CONNECTED", "RV_DONE", "VS
 		   case ENROLLED:
 		     ok = pledge_arrived(cert_code, &registrar_cert);	     
              if (ok == 0) ok = store_enrolled();
-		     coap_session_release(client->session);  /* close the DTLS session with Regisrar or Join Proxy */	                    
+		         coap_session_release(client->session);  /* close the DTLS session with Regisrar or Join Proxy */	                    
              if (ok == 0){
                if (continuous == 1){  
                    set_host( client, regis_host);
@@ -1843,6 +1732,12 @@ const char *state_names[] = { "START", "DISCOVERED", "CONNECTED", "RV_DONE", "VS
 	   if (ok == 0) pledge_state = pledge_state + step;
 	   else {
 		   ok = 0;
+       if (continuous == 1){  
+                   set_host( client, regis_host);
+                   set_port( client, regis_port);
+                   pledge_state = DISCOVERED;    /*  registrar has been set in command line or by discovery  */
+                   goto cont; /* redo BRSKI enrollment loop */
+       } /* if continuous */  
 		   pledge_state = START; /* something went wrong; start again */
 	   }
 	   ok =0;

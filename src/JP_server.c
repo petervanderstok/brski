@@ -194,7 +194,7 @@ JP_hnd_post_boot(coap_context_t *ctx UNUSED_PARAM,
      } /* coap_get_block */
   } /* request */
 	
-  data = assemble_data(resource, request, response, &size);
+  data = assemble_data(session, request, response, &size);
   if (data == (void *)-1)return;  /* more blocks to arrive */
   if ((data == NULL) | (size == 0)){
 	  oscore_error_return(COAP_RESPONSE_CODE(400), 

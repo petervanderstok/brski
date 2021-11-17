@@ -590,7 +590,7 @@ AS_hnd_post_init(coap_context_t *ctx UNUSED_PARAM,
   uint8_t *cnonce = NULL;
   coap_log(LOG_DEBUG, "hnd_post_init start \n");
   coap_show_pdu(LOG_DEBUG, response);
-  data = assemble_data(resource, request, response, &size);
+  data = assemble_data(session, request, response, &size);
   if (data == (void *)-1)return;  /* more blocks to arrive */
   if ((data == NULL) | (size == 0)){
 	  oscore_error_return(COAP_RESPONSE_CODE(400), 
@@ -706,7 +706,7 @@ AS_hnd_post_boot(coap_context_t *ctx UNUSED_PARAM,
      } /* coap_get_block */
   } /* request */
   
-  data = assemble_data(resource, request, response, &size);
+  data = assemble_data(session, request, response, &size);
   if (data == (void *)-1)return;  /* more blocks to arrive */
   fprintf(stderr, "in BOOT data = %p       size = %d \n", (void *)data, (int)size);
   if ((data == NULL) | (size == 0)){
@@ -773,7 +773,7 @@ AS_hnd_post_server(coap_context_t *ctx UNUSED_PARAM,
      return;
   }
   
-  data = assemble_data(resource, request, response, &size);
+  data = assemble_data(session, request, response, &size);
   if (data == (void *)-1)return;  /* more blocks to arrive */
   if ((data == NULL) | (size == 0)){
 	  oscore_error_return(COAP_RESPONSE_CODE(400), 
@@ -891,7 +891,7 @@ AS_hnd_post_client(coap_context_t *ctx UNUSED_PARAM,
      return;
   }
  
-  data = assemble_data(resource, request, response, &size);
+  data = assemble_data(session, request, response, &size);
   if (data == (void *)-1)return;  /* more blocks to arrive */
   if ((data == NULL) | (size == 0)){
 	  oscore_error_return(COAP_RESPONSE_CODE(400), 
@@ -1016,7 +1016,7 @@ AS_hnd_post_introspect(coap_context_t *ctx UNUSED_PARAM,
      response, "No oscore protection");
      return;
   }
-  data = assemble_data(resource, request, response, &size);
+  data = assemble_data(session, request, response, &size);
   if (data == (void *)-1)return;  /* more blocks to arrive */
   if ((data == NULL) | (size == 0)){
 	  oscore_error_return(COAP_RESPONSE_CODE(400), 
@@ -1092,7 +1092,7 @@ AS_hnd_post_token(coap_context_t  *ctx UNUSED_PARAM,
      } /* coap_get_block */
   } /* request */
   
-  data = assemble_data(resource, request, response, &size);
+  data = assemble_data(session, request, response, &size);
   if (data == (void *)-1)return;  /* more blocks to arrive */
   if ((data == NULL) | (size == 0)){
 	  oscore_error_return(COAP_RESPONSE_CODE(400), 
