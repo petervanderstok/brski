@@ -85,7 +85,7 @@ MC_join(coap_context_t *ctx, char *group_name);
  */
 uint8_t
 coap_handle_block(
-           struct coap_resource_t *resource,
+           coap_session_t *session,
            coap_pdu_t *request,
            coap_pdu_t *response);
            
@@ -95,7 +95,7 @@ coap_handle_block(
  * nok: reurns null
  */         
 uint8_t *
-assemble_data(struct coap_resource_t *resource,
+assemble_data(coap_session_t *session,
            coap_pdu_t *request,
            coap_pdu_t *response,
            size_t *size);
