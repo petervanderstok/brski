@@ -56,11 +56,6 @@ typedef uint8_t coap_session_state_t;
 #define COAP_SESSION_STATE_HANDSHAKE           2
 #define COAP_SESSION_STATE_CSM                 3
 #define COAP_SESSION_STATE_ESTABLISHED         4
-
-#ifdef WITH_BRSKI
-typedef int8_t (*pl_code_t)
-       (void *);
-#endif   /* WITH_BRSKI */
   
 typedef struct coap_session_t {
   coap_proto_t proto;               /**< protocol used */
@@ -79,9 +74,6 @@ typedef struct coap_session_t {
 #ifdef WITH_OSCORE
   uint8_t  oscore_encryption;       /* oscore is used for this session  */
 #endif /*WITH_OSCORE */
-#ifdef WITH_BRSKI
-  pl_code_t  payload_code;          /* routine to be called after dtls session establishment and before pdu sending */
-#endif /* WITH_BRSKI */
   void *tls;                        /**< security parameters */
   uint16_t tx_mid;                  /**< the last message id that was used in this session */
   uint8_t con_active;               /**< Active CON request sent */
