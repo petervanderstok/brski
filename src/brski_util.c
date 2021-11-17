@@ -1,4 +1,4 @@
-/* file_mem.c -- implementation of 
+/* brski_util.c -- implementation of 
  * the Constrained Application Protocol (CoAP) server interface
  *         as defined in RFC 7252
  * Peter van der Stok <consultancy@vanderstok.org>
@@ -23,6 +23,7 @@
 #include <signal.h>
 #include <stdint.h>
 #include "str.h"
+#include "brski_util.h"
 #include "coap_internal.h"
 
 int32_t NR_of_malloc = 0;
@@ -45,6 +46,213 @@ COAP_FREE(void *adr){
 int32_t
 coap_malloc_loss(void){
 	return NR_of_malloc - NR_of_free;
+}
+
+/* Routines to do multiple block input
+ * and multpile block output 
+ */
+
+static ret_data_t *RG_data_queue = NULL;
+
+static void
+RG_unchain_item(ret_data_t *item){
+  if (RG_data_queue == item) {
+    RG_data_queue = item->next;
+    return;
+  }
+  ret_data_t *temp = RG_data_queue;
+  while (temp != NULL){
+    if (temp->next == item){
+      temp->next = item->next;
+      return;
+    }
+    temp = temp->next;
+  }
+}
+
+ret_data_t *
+RG_corresponding_data(coap_session_t *session){
+  ret_data_t *item = RG_data_queue;
+  while (item != NULL){
+    if (item->session == session){
+       return item;
+     }
+     item = item->next;
+  }
+  return NULL;
+}
+
+coap_string_t *
+RG_new_return_data(coap_session_t *session){
+    ret_data_t *item = RG_corresponding_data(session);
+    if (item != NULL) return item->RG_ret_data;
+    return NULL;
+}
+
+static coap_string_t *
+RG_new_input_data(coap_session_t *session){
+    ret_data_t *item = RG_corresponding_data(session);
+    if (item != NULL) return item->RG_in_data;
+    return NULL;
+}
+
+static void
+free_RG_data(coap_session_t *session){
+  ret_data_t *item = RG_corresponding_data(session);
+  if (item == NULL) return;
+  RG_unchain_item(item);
+  if (item->RG_ret_data != NULL){
+      if (item->RG_ret_data->s != NULL){
+	coap_free(item->RG_ret_data->s);
+      }
+      coap_free(item->RG_ret_data);
+  }
+  if (item->RG_in_data != NULL){
+	coap_delete_string(item->RG_in_data);
+  }
+  coap_free(item);  
+}
+
+static ret_data_t *
+RG_corresponding_item(coap_session_t *session){
+  ret_data_t *item = RG_corresponding_data(session);
+  if (item != NULL) return item;
+/*  new item entered */
+  item = coap_malloc(sizeof(ret_data_t));
+  if (item == NULL) return NULL;
+  item->next = RG_data_queue;
+  RG_data_queue = item;
+  item->RG_ret_data = coap_malloc(sizeof(coap_string_t));
+  memset(item->RG_ret_data, 0, sizeof(coap_string_t));
+  item->RG_in_data = NULL;
+  item->session = session;
+  return item;
+}
+
+void
+RG_verify_release(coap_session_t *session, coap_pdu_t *response){
+  coap_opt_iterator_t opt_iter;  
+  coap_opt_t *block_opt = coap_check_option(response, COAP_OPTION_BLOCK2, &opt_iter);
+  if (block_opt) { /* handle Block2 */
+    if(!COAP_OPT_BLOCK_MORE(block_opt)) free_RG_data(session);  /* last block */
+  }
+  else {
+    free_RG_data(session); /* no more data to send  */
+  }
+}
+
+
+/* regular server handler for blocked request
+ * no block used: return 1
+ * block used but not complete: return 2
+ * block missing: return 3
+ * all blocks received: return 0;
+ * uses resource->userdata to store intermediate results
+ * coap_handle_block
+ */
+uint8_t
+coap_handle_block(
+           coap_session_t *session,
+           coap_pdu_t *request,
+           coap_pdu_t *response)
+ {
+   coap_block_t block1;
+   size_t size = 0;
+   uint8_t *data = NULL;
+   ret_data_t *item = RG_corresponding_item(session);
+   if (item == NULL) return 3;   
+   if (coap_get_block(request, COAP_OPTION_BLOCK1, &block1)) {
+    /* handle BLOCK1 */
+    if (coap_get_data(request, &size, &data) && (size > 0)) {
+      size_t offset = block1.num << (block1.szx + 4);
+
+      coap_string_t *value = item->RG_in_data;
+      if (offset == 0) {
+        if (value) {
+          coap_delete_string(value);
+          value = NULL;
+        }
+      }
+      else if (offset >
+            (value ? value->length : 0)) {
+        /* Upload is not sequential - block missing */
+        response->code = COAP_RESPONSE_CODE(408);
+        return 3;
+      }
+      else if (offset <
+            (value ? value->length : 0)) {
+        /* Upload is not sequential - block duplicated */
+        goto just_respond;
+      }
+      /* Add in new block to end of current data */
+      coap_string_t *new_value = coap_new_string(offset + size);
+      memcpy (&new_value->s[offset], data, size);
+      new_value->length = offset + size;
+      if (value) {
+        memcpy (new_value->s, value->s, value->length);
+        coap_delete_string(value);
+      }
+      item->RG_in_data = new_value;
+    }
+    uint8_t ret = 0;
+just_respond:
+    if (block1.m) {
+      unsigned char buf[4];
+      response->code = COAP_RESPONSE_CODE(231);
+      coap_add_option(response, COAP_OPTION_BLOCK1, coap_encode_var_safe(buf, sizeof(buf),
+                                                  ((block1.num << 4) |
+                                                   (block1.m << 3) |
+                                                   block1.szx)),
+                  buf);
+      ret = 2;
+    } 
+    return ret;
+    }
+  return 1;
+}
+
+
+/* assemble_data
+ * assemble data from received block in request
+ * ok: returns data
+ * nok: returns null
+ */
+uint8_t *
+assemble_data(coap_session_t *session,
+           coap_pdu_t *request,
+           coap_pdu_t *response,
+           size_t *size)
+{
+  uint8_t ret = coap_handle_block(session, request, response);
+  uint8_t *data = NULL;
+  if (ret == 1){
+  /* NOT BLOCK1 */  
+    if (!coap_get_data(request, size, &data) && (*size > 0)) {
+    /* Not a BLOCK1 and no data */
+       brski_error_return(COAP_RESPONSE_CODE(400), 
+                    response, "Cannot find request data");
+    }
+  }
+  else if (ret == 0){
+	/* BLOCK1 complete */
+	coap_string_t *value = RG_new_input_data(session);
+	if (value != NULL){
+           data = value->s;
+	   *size = value->length;
+       }else {
+	   data = NULL;
+	   *size = 0;
+       }
+  }
+  else if (ret == 3){
+  /* BLOCK1 with missing block  */
+    return NULL;
+  }
+  else if (ret == 2){
+	/* wait for more blocks  */
+	return (void *)-1;
+  }
+  return data;
 }
 
 /*
