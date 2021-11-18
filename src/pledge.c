@@ -1628,11 +1628,16 @@ const char *state_names[] = { "START", "DISCOVERED", "CONNECTED", "RV_DONE", "VS
     pledge_state = DISCOVERED;    /*  registrar has been set  in command line, no discovery  */
     make_ready();
   }
+  int NOK_cnt  = 0;  /* number of times that ok == 1 */
+  int loop_cnt = 0;  /* time out count on brski request execution */
+  int TO_cnt   = 0;  /* number of times that brski request execution timed out */
+  int BRSKI_cnt = 0;  /* number of times that BRSKI enrollment took place */
   while ( !quit ) {
     int result;
     int8_t ok = 0;
     if (is_ready()){ /* remote action is done */
-      fprintf(stderr," EDHOC_state is %d,   PLEDGE_state is %s,   number of malloc is %d \n",  edhoc_state, state_names[pledge_state],(int)coap_nr_of_alloc());
+      fprintf(stderr,"Brski count: %06d,   TO count: %02d,    NOK count: %02d,    malloc_count  %03d,  EDHOC_state is %d,   PLEDGE_state is %s\n", 
+                          BRSKI_cnt, TO_cnt, NOK_cnt, (int)coap_nr_of_alloc(), edhoc_state, state_names[pledge_state]);
 	   switch (pledge_state) {
 		   case START:
 		     ok = verify_discovery( client);
@@ -1649,6 +1654,9 @@ const char *state_names[] = { "START", "DISCOVERED", "CONNECTED", "RV_DONE", "VS
 		     }
              pledge_state++;
 		   case DISCOVERED:
+		     BRSKI_cnt++;
+		     coap_string_t query   = {.length = 0, .s = NULL};
+             set_query(client, &query);   /* remove rt=XXXXX  */
              if (edhoc_required){ /* make edhoc connection  */
                step = 0;    /* several edhoc_states within DISCOVERED  */
                if (edhoc_state == EDHOC_FAILED){
@@ -1702,7 +1710,7 @@ const char *state_names[] = { "START", "DISCOVERED", "CONNECTED", "RV_DONE", "VS
 		   case ENROLLED:
 		     ok = pledge_arrived(cert_code, &registrar_cert);	     
              if (ok == 0) ok = store_enrolled();
-		         coap_session_release(client->session);  /* close the DTLS session with Regisrar or Join Proxy */	                    
+		     coap_session_release(client->session);  /* close the DTLS session with Regisrar or Join Proxy */	                    
              if (ok == 0){
                if (continuous == 1){  
                    set_host( client, regis_host);
@@ -1731,6 +1739,7 @@ const char *state_names[] = { "START", "DISCOVERED", "CONNECTED", "RV_DONE", "VS
 	   }  /* switch */
 	   if (ok == 0) pledge_state = pledge_state + step;
 	   else {
+		   NOK_cnt++;
 		   ok = 0;
        if (continuous == 1){  
                    set_host( client, regis_host);
@@ -1742,8 +1751,20 @@ const char *state_names[] = { "START", "DISCOVERED", "CONNECTED", "RV_DONE", "VS
 	   }
 	   ok =0;
 	   reset_ready();
+	   loop_cnt = 40;
 cont:  ok = 0;
     }  /* if is_ready */
+    if (continuous == 1){ /* do time out count */
+       loop_cnt--;
+       if (loop_cnt == 0){ /* BRSKI request TO occurred */
+	       coap_session_release(client->session); 
+		   make_ready(); 
+		   TO_cnt++;
+           set_host( client, regis_host);
+           set_port( client, regis_port);		
+		   pledge_state = DISCOVERED;    /*  registrar has been set in command line or by discovery  */
+	   }
+    }
     if (coap_fd != -1) {
       /*
        * Using epoll.  It is more usual to call coap_io_process() with wait_ms
