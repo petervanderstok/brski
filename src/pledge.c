@@ -112,8 +112,8 @@ char *root_ca_file = NULL;                         /* List of trusted Root CAs i
 /* discover Registrar or join proxy  */
 
 char regis_discover[]      = "rt=ace.est.rv";        /* discover registrar for direct enrollemnt */
-char regis_port_discover[] = "rt=brski-port";        /* discover registrar port for join_proxy */
-char join_proxy_discover[] = "rt=brski-proxy";       /* discover join proxy port */
+char regis_port_discover[] = "rt="REGISTRAR_RT;      /* discover registrar port for join_proxy */
+char join_proxy_discover[] = "rt="JOIN_PROXY_RT;       /* discover join proxy port */
 char *discover_rt          = regis_discover;         /* rt used for discovery (default is Registrar) */
 char *discover_choice      = regis_discover;         /* rt chosen with -R option    */
 
@@ -792,7 +792,7 @@ static int8_t verify_discovery(client_request_t *client){
 	fprintf(stderr,"discovered host port is %d \n", port);
 	if (host == NULL) return 1;
 	/* coaps is wanted after discovery , set coaps port  and scheme */
-	if (port == COAP_DEFAULT_PORT) port++;	
+	if (port == COAP_DEFAULT_PORT) port = COAPS_DEFAULT_PORT;	
     set_port(client, port);
 	set_host(client, host);
     set_scheme( client, COAP_URI_SCHEME_COAPS);
@@ -1146,7 +1146,7 @@ usage( const char *program, const char *version) {
      "\t-J     \t\tJSON is used replacing CBOR using media-type application/voucher-cms+json\n"
      "\t-R     \t\tDiscover Registrar, is default \n"
      "\t-P     \t\tDiscover Join Proxy, if not set Registrar is discovered \n"
-     "\t-C     \t\tAfter enrollemnt the next enrollment cycle is continued \n"
+     "\t-C     \t\tAfter enrollment the next enrollment cycle is continued \n"
      "\t-p port\t\tPort of the coap device server\n"
      "\t       \t\tPort+1 is used for coaps device server \n"
      "\t       \t\tPort+2 is used for the coap Join_proxy port \n"
@@ -1304,8 +1304,8 @@ prepare_join_resource(coap_context_t *ctx){
             r = coap_resource_init(coap_make_str_const((const char *)uri_port->s), resource_flags);
             coap_register_handler(r, COAP_REQUEST_GET, JP_hnd_proxy); 
             coap_add_attr(r, coap_make_str_const("ct"), coap_make_str_const("62"), 0);
-            coap_add_attr(r, coap_make_str_const("title"), coap_make_str_const("\"brski-proxy\""), 0);
-            coap_add_attr(r, coap_make_str_const("rt"), coap_make_str_const("\"brski-proxy\""), 0);
+            coap_add_attr(r, coap_make_str_const("title"), coap_make_str_const("\"join-proxy\""), 0);
+            coap_add_attr(r, coap_make_str_const("rt"), coap_make_str_const("\""JOIN_PROXY_RT"\""), 0);
             coap_add_attr(r, coap_make_str_const("if"), coap_make_str_const("\"join-proxy\""), 0);
             coap_add_resource(ctx, r);
 	     } else coap_log(LOG_WARNING,"brski URI does not exist  \n");
@@ -1719,7 +1719,7 @@ const char *state_names[] = { "START", "DISCOVERED", "CONNECTED", "RV_DONE", "VS
                    goto cont; /* redo BRSKI enrollment loop */
                } /* if continuous */  
 			   discover_rt = regis_port_discover;       /* discover Registrar port for join proxy state */
-		       set_port( client, COAP_DEFAULT_PORT);
+		       set_port( client, regis_port-1);           /* regis_port contains specified or discovered registrar DTLS port */
                discover_node( client, &MC_coap);  
                discover_rt = discover_choice;           /* specified Registrar or Join Proxy */  
              } /* if ok == 0 */ 

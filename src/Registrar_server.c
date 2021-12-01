@@ -1807,7 +1807,6 @@ RG_hnd_post_rv(coap_context_t *ctx,
         } /* coap_get_block */
   } /* request */
   data = assemble_data(session, request, response, &size);
-  fprintf(stderr,"est/rv data is %p \n", (void *)data);
   if (data == (void *)-1)return;  /* more blocks to arrive */
   srv_cnt++;
   srv_post_rv_cnt++; 
@@ -2788,9 +2787,9 @@ r = coap_resource_init(coap_make_str_const(".well-known/est/att"), resource_flag
          r = coap_resource_init(coap_make_str_const((const char *)uri_port->s), resource_flags);
          coap_register_handler(r, COAP_REQUEST_GET, RG_hnd_proxy); 
          coap_add_attr(r, coap_make_str_const("ct"), coap_make_str_const("62"), 0);
-         coap_add_attr(r, coap_make_str_const("title"), coap_make_str_const("\"brski-proxy\""), 0);
-         coap_add_attr(r, coap_make_str_const("rt"), coap_make_str_const("\"brski-port\""), 0);
-         coap_add_attr(r, coap_make_str_const("if"), coap_make_str_const("\"join-proxy\""), 0);
+         coap_add_attr(r, coap_make_str_const("title"), coap_make_str_const("\"registrar-proxy\""), 0);
+         coap_add_attr(r, coap_make_str_const("rt"), coap_make_str_const("\""REGISTRAR_RT"\""), 0);
+         coap_add_attr(r, coap_make_str_const("if"), coap_make_str_const("\"registrar-proxy\""), 0);
          coap_add_resource(ctx, r);
       } else coap_log(LOG_WARNING,"brski URI does not exist  \n");
   } else coap_log(LOG_WARNING,"brski URI does not exist  \n");
@@ -2825,7 +2824,7 @@ usage( const char *program, const char *version) {
      "\t-p port\t\tPort of the coap Registrar server\n"
      "\t       \t\tPort+1 is used for coaps Registrar server \n"
      "\t       \t\tPort+2 is used for stateless Join_Proxy acces \n"
-     "\t       \t\tvalue of stateless Join_Proxy port can discovered with rt=brski-proxy \n"
+     "\t       \t\tvalue of stateless Join_Proxy port can discovered with rt=brski.jp \n"
      "\t       \t\tif not specified, default coap/coaps server ports are used \n"
      "\t-h     \t\tHelp displays this message \n"
      "\texamples:\t  %s -p 5663 -v 0\n"
