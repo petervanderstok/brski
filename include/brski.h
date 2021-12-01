@@ -184,6 +184,10 @@
 #define ALL_COAP_LOCAL_IPV6_NODES  "FF02::FD"
 #define ALL_COAP_LOCAL_IPV4_NODES  "224.0.1.187"
 
+/* port discovery for Registrar and Join Proxy */
+#define REGISTRAR_RT               "brski.rjp"
+#define JOIN_PROXY_RT              "brski.jp"
+
 #define VOUCHER_ACCEPTABLE       0
 #define VOUCHER_REJECTED         1
 
