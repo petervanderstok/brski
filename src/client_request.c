@@ -377,8 +377,7 @@ init_URIs(coap_address_t *addr, uint8_t proto, uint8_t port_type){
  */
 static int16_t
 store_discovery_payload(coap_session_t *session, unsigned char *data, size_t len, uint16_t code) 
-{
-   fprintf(stderr,"store_doscovery_payload  start; number of malloc is %d \n", (int)coap_nr_of_alloc());	
+{	
    last_code = code;
    uint8_t found = 0;  /* indicates presence of [  ] around address */
    static unsigned char alternative[INET6_ADDRSTRLEN +32];
@@ -430,7 +429,6 @@ store_discovery_payload(coap_session_t *session, unsigned char *data, size_t len
 	   p++;
    }
    temp->port = port;
-   fprintf(stderr,"store_doscovery_payload  end; number of malloc is %d \n", (int)coap_nr_of_alloc());	
    return 0;
 }
 

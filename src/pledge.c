@@ -789,7 +789,7 @@ JP_hnd_proxy(coap_context_t *ctx UNUSED_PARAM,
 static int8_t verify_discovery(client_request_t *client){
 	uint16_t port;
 	coap_string_t *host = get_discovered_host_port(&port);
-	fprintf(stderr,"discovered host port is %d \n", port);
+    coap_log(LOG_INFO,"discovered host port is %d \n", port);
 	if (host == NULL) return 1;
 	/* coaps is wanted after discovery , set coaps port  and scheme */
 	if (port == COAP_DEFAULT_PORT) port = COAPS_DEFAULT_PORT;	
