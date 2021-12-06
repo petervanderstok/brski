@@ -17,10 +17,10 @@ _AUTH_OBJ = oscore_oauth.o oscore-group.o
 AUTH_OBJ = $(patsubst %,$(ODIR)/%,$(_AUTH_OBJ))
 
 _edDSA_OBJ = edDSA_keypair.o edDSA_sc.o ecc.o edDSA_seed.o edDSA_sign.o edDSA_verify.o \
-edDSA_add_scalar.o edDSA_fe.o edDSA_ge.o	edDSA_key_exchange.o  edDSA_keypair.o sha512.o
+edDSA_add_scalar.o edDSA_fe.o edDSA_ge.o edDSA_key_exchange.o  edDSA_keypair.o sha512.o
 
 _OBJ = $(_edDSA_OBJ) address.o coap-keystore-simple.o	 \
-aes-128.o		coap_notls.o    brski_util.o	\
+aes-128.o		coap_notls.o    sv_cl_util.o	\
 async.o		coap_mbedtls.o  pdu.o \
 block.o		coap_session.o  resource.o \
 cbor.o		coap_time.o     coap_tinydtls.o	   encode.o \
@@ -64,7 +64,7 @@ $(ODIR)/%.o: ./src/%$(EXTENSION) $(DEPS)
 
 #define the applications that need to be generated 
 
-apps = coap_client coap_server GM_client group_client box_server pledge masa registrar test
+apps = coap_client coap_server GM_client group_client pledge masa registrar test
  
 all: $(apps)
 
@@ -83,16 +83,13 @@ coap_client: $(OBJ) $(OSC_OBJ) ./out/coap_client.o ./out/edhoc.o ./out/JP_dummy.
 group_client: $(OBJ) $(OSC_OBJ) $(AUTH_OBJ) ./out/group_client.o ./out/JP_dummy.o
 	$(CC) -o $@ $^ $(CFLAGS) $(WFLAGS) $(DFLAGS) $(LIBS)
 
-box_server: $(OBJ) $(BOX_SERVER_OBJ) $(OSC_OBJ) $(AUTH_OBJ) ./out/JP_dummy.o ./out/edhoc.o
-	$(CC) -o $@ $^ $(CFLAGS) $(WFLAGS) $(DFLAGS) $(LIBS)
-
 coap_server: $(OBJ) $(OSC_OBJ) ./out/coap_server.o ./out/edhoc.o ./out/JP_dummy.o
 	$(CC) -o $@ $^ $(CFLAGS) $(WFLAGS) $(DFLAGS) $(LIBS)
 
 registrar: $(OBJ) $(OSC_OBJ) $(BRSKI_OBJ) ./out/Registrar_server.o ./out/edhoc.o
 	$(CC) -o $@ $^ $(CFLAGS) $(WFLAGS) $(DFLAGS) $(LIBS) -L/usr/local/ssl/lib -lcrypto -lssl
 	
-pledge: $(OBJ) $(OSC_OBJ) $(BRSKI_OBJ) ./out/pledge.o ./out/JP_server.o ./out/edhoc.o \
+pledge: $(OBJ) $(OSC_OBJ) $(BRSKI_OBJ) ./out/pledge.o ./out/edhoc.o \
  ./out/main_pledge.o
 	$(CC) -o $@ $^ $(CFLAGS) $(WFLAGS) $(DFLAGS) $(LIBS)	
 	
@@ -103,7 +100,7 @@ masa: $(OBJ) $(OSC_OBJ) $(BRSKI_OBJ) ./out/masa_server.o
 	$(CC) -o $@ $^ $(CFLAGS) $(WFLAGS) $(DFLAGS) $(LIBS)
 
 test: $(OBJ) $(OSC_OBJ) $(BRSKI_OBJ) ./out/test.o \
- ./out/pledge.o ./out/edhoc.o ./out/JP_server.o
+ ./out/pledge.o ./out/edhoc.o
 	$(CC) -o $@ $^ $(CFLAGS) $(WFLAGS) $(DFLAGS) $(LIBS)
 	
 #Cleanup
