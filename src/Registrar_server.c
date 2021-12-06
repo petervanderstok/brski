@@ -51,7 +51,7 @@
 #include "JP_server.h"
 #include "brski.h"
 #include "utlist.h"
-#include "brski_util.h"
+#include "sv_cl_util.h"
 #include "edhoc.h"
 #include "client_request.h"
 #include <coap.h>
@@ -1640,12 +1640,12 @@ RG_hnd_post_vs(coap_context_t *ctx,
 	if (coap_get_block(request, COAP_OPTION_BLOCK2, &block2)){	
 	  if (JSON_set() == JSON_ON)content_format = COAP_MEDIATYPE_APPLICATION_JSON;
 	  else content_format = COAP_MEDIATYPE_APPLICATION_CBOR;
-	  ret_data_t *item = RG_corresponding_data(session);
-	  RG_ret_data = item->RG_ret_data;
+	  ret_data_t *item = SC_corresponding_data(session);
+	  RG_ret_data = item->SC_ret_data;
           coap_add_data_blocked_response(resource, session, request, response, token,
                                  content_format, -1,
                                  RG_ret_data->length, RG_ret_data->s);
-         RG_verify_release(session, response);				 
+         SC_verify_release(session, response);				 
          return;
      } /* coap_get_block */
   } /* request */
@@ -1655,9 +1655,9 @@ RG_hnd_post_vs(coap_context_t *ctx,
   srv_cnt++;
   srv_post_vs_cnt++;  
   /* RG_ret_data has been used for blocked response => can be liberated for new request */
-  RG_ret_data = RG_new_return_data(session);
+  RG_ret_data = SC_new_return_data(session);
   if ((size < 1) || (data == NULL) || (RG_ret_data == NULL)){
-      brski_error_return(COAP_RESPONSE_CODE(400), 
+      server_error_return(COAP_RESPONSE_CODE(400), 
          response, "log did not arrive\n");
       return;
   }
@@ -1669,7 +1669,7 @@ RG_hnd_post_vs(coap_context_t *ctx,
   if (content_format == COAP_MEDIATYPE_APPLICATION_JSON) set_JSON(JSON_ON);
   else if (content_format == COAP_MEDIATYPE_APPLICATION_CBOR) set_JSON(JSON_OFF);
   else {
-    brski_error_return(COAP_RESPONSE_CODE(404), 
+    server_error_return(COAP_RESPONSE_CODE(404), 
         response, "Illegal content format\n");
     return;
   }
@@ -1683,7 +1683,7 @@ RG_hnd_post_vs(coap_context_t *ctx,
   else
       status = find_status_any(session);
   if (status == NULL){
-      brski_error_return(COAP_RESPONSE_CODE(404), 
+      server_error_return(COAP_RESPONSE_CODE(404), 
            response, "no status for this DTLS connection\n");
       return;
   }
@@ -1693,12 +1693,12 @@ RG_hnd_post_vs(coap_context_t *ctx,
   else
         ok = brski_json_readstatus(&log, status); 
   if (ok != 0){
-      brski_error_return(COAP_RESPONSE_CODE(404), 
+      server_error_return(COAP_RESPONSE_CODE(404), 
           response, "log cannot be parsed \n");
       return;
   }
   if (status->acceptable != VOUCHER_ACCEPTABLE){
-	  brski_error_return(COAP_RESPONSE_CODE(404), 
+	  server_error_return(COAP_RESPONSE_CODE(404), 
       response, "voucher is not acceptable\n");
 	  return;
   }
@@ -1710,13 +1710,13 @@ RG_hnd_post_vs(coap_context_t *ctx,
   /* invoke MASA */
   int16_t http_resp = call_MASA_ra( status, RG_ret_data, file_name);
   if (http_resp > 299){
-	  brski_error_return(COAP_RESPONSE_CODE(http_resp),response, "call_MASA_ra returned error\n");
+	  server_error_return(COAP_RESPONSE_CODE(http_resp),response, "call_MASA_ra returned error\n");
 	  return;
   }
   coap_add_data_blocked_response(resource, session, request, response, token,
                                  content_format, -1,
                                  RG_ret_data->length, RG_ret_data->s); 
-  RG_verify_release(session, response);				  
+  SC_verify_release(session, response);				  
   fprintf(stderr," Post_vs server  tid %04x, invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", response->tid, srv_post_vs_cnt, srv_cnt, (int)coap_nr_of_alloc());                            
 }
 
@@ -1743,12 +1743,12 @@ RG_hnd_get_es(coap_context_t *ctx UNUSED_PARAM,
   if (request) {
 	coap_block_t block2 = { 0, 0, 0};
 	if (coap_get_block(request, COAP_OPTION_BLOCK2, &block2)){
-	  ret_data_t *item = RG_corresponding_data(session);
-	  RG_ret_data = item->RG_ret_data;	  	
+	  ret_data_t *item = SC_corresponding_data(session);
+	  RG_ret_data = item->SC_ret_data;	  	
 	  coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_CSRATTRS, -1,
                                  RG_ret_data->length, RG_ret_data->s);
-	  RG_verify_release(session, response);			 
+	  SC_verify_release(session, response);			 
           return;
         } /* coap_get_block */
   } /* request */
@@ -1756,16 +1756,16 @@ RG_hnd_get_es(coap_context_t *ctx UNUSED_PARAM,
   data = assemble_data(session, request, response, &size);
   if (data == (void *)-1)return;  /* more blocks to arrive */ 
   /* RG_ret_data has been used for blocked response => can be liberated for new request */
-  RG_ret_data = RG_new_return_data(session);
+  RG_ret_data = SC_new_return_data(session);
   response->code = COAP_RESPONSE_CODE(205); 
   int8_t ok = brski_cbor_voucherstatus(RG_ret_data);
   if (ok != 0){
-      brski_error_return(COAP_RESPONSE_CODE(404), 
+      server_error_return(COAP_RESPONSE_CODE(404), 
          response, "enroll status data not available\n");
       return;
   }
   response->code = COAP_RESPONSE_CODE(203);  
-  RG_verify_release(session, response);		 
+  SC_verify_release(session, response);		 
   fprintf(stderr," post_es server tid %04x, invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", response->tid, srv_get_es_cnt, srv_cnt, (int)coap_nr_of_alloc());
 }
 
@@ -1797,12 +1797,12 @@ RG_hnd_post_rv(coap_context_t *ctx,
 	if (coap_get_block(request, COAP_OPTION_BLOCK2, &block2)){
 	  if (JSON_set() == JSON_ON)content_format = COAP_MEDIATYPE_APPLICATION_JSON;
 	  else content_format = COAP_MEDIATYPE_APPLICATION_CBOR;
-	  ret_data_t *item = RG_corresponding_data(session);
-	  RG_ret_data = item->RG_ret_data;	  
+	  ret_data_t *item = SC_corresponding_data(session);
+	  RG_ret_data = item->SC_ret_data;	  
           coap_add_data_blocked_response(resource, session, request, response, token,
                                  content_format, -1,
                                  RG_ret_data->length, RG_ret_data->s);
-          RG_verify_release(session, response);				 
+          SC_verify_release(session, response);				 
           return;
         } /* coap_get_block */
   } /* request */
@@ -1811,10 +1811,10 @@ RG_hnd_post_rv(coap_context_t *ctx,
   srv_cnt++;
   srv_post_rv_cnt++; 
   /* RG_ret_data has been used for blocked response => can be liberated for new request */
-  RG_ret_data = RG_new_return_data(session);
+  RG_ret_data = SC_new_return_data(session);
   char comb_file[] = REGIS_SRV_COMB;  
   if ((data == NULL) || (size == 0) || (RG_ret_data == NULL)){
-	  brski_error_return(COAP_RESPONSE_CODE(404), 
+	  server_error_return(COAP_RESPONSE_CODE(404), 
       response, "Did not find request data\n");
 	  return;
   }
@@ -1841,7 +1841,7 @@ RG_hnd_post_rv(coap_context_t *ctx,
 	  voucher_request->length = size;
 	  voucher_request->s = data;	
   }  else {
-	  brski_error_return(COAP_RESPONSE_CODE(406), 
+	  server_error_return(COAP_RESPONSE_CODE(406), 
               response, "illegal media format \n");
 	  return;
   }
@@ -1852,7 +1852,7 @@ RG_hnd_post_rv(coap_context_t *ctx,
 	 	  req_contents = brski_parse_json_voucher(voucher_request);   
   } 
   if (req_contents == NULL){
-		  brski_error_return(COAP_RESPONSE_CODE(404), 
+		  server_error_return(COAP_RESPONSE_CODE(404), 
               response, "voucher request cannot be parsed\n");
           if (voucher_request != NULL){
 			  if ((voucher_request->s != NULL) && (voucher_request->s != data))coap_free(voucher_request->s);
@@ -1869,7 +1869,7 @@ RG_hnd_post_rv(coap_context_t *ctx,
 			  coap_free(voucher_request);
 		  }
 		  remove_voucher(req_contents);
-		  brski_error_return(COAP_RESPONSE_CODE(403), 
+		  server_error_return(COAP_RESPONSE_CODE(403), 
                           response, "this pledge is already enrolled\n");
 	      return;
 	  } /* mutiple request */
@@ -1889,7 +1889,7 @@ RG_hnd_post_rv(coap_context_t *ctx,
   
   if (ok != 0){
       if (masa_request.s != NULL) coap_free(masa_request.s);
-      brski_error_return(COAP_RESPONSE_CODE(406), 
+      server_error_return(COAP_RESPONSE_CODE(406), 
               response, "MASA voucher_request cannot be generated\n");
 	  return;
   } 
@@ -1908,7 +1908,7 @@ RG_hnd_post_rv(coap_context_t *ctx,
   }
   coap_free(masa_request.s);
   if (ok != 0){
-	 brski_error_return(COAP_RESPONSE_CODE(406), 
+	 server_error_return(COAP_RESPONSE_CODE(406), 
               response, "cannot sign masa voucher_request\n");
      if (masa_request_sign.s != NULL) coap_free(masa_request_sign.s);
 	 return; 
@@ -1922,7 +1922,7 @@ RG_hnd_post_rv(coap_context_t *ctx,
   int16_t http_resp = call_MASA_rv(&masa_request_sign, RG_ret_data, file_name);
   if (http_resp > 299){
 	  coap_free(masa_request_sign.s);
-	  brski_error_return(COAP_RESPONSE_CODE(http_resp),response, "call_MASA_rv returned error\n");
+	  server_error_return(COAP_RESPONSE_CODE(http_resp),response, "call_MASA_rv returned error\n");
 	  return;
   }   
   coap_free(masa_request_sign.s);
@@ -1930,7 +1930,7 @@ RG_hnd_post_rv(coap_context_t *ctx,
   coap_add_data_blocked_response(resource, session, request, response, token,
                                  content_format, -1,
                                  RG_ret_data->length, RG_ret_data->s);
-  RG_verify_release(session, response);				 
+  SC_verify_release(session, response);				 
 }
 
 /*
@@ -1954,12 +1954,12 @@ RG_hnd_get_crts(coap_context_t *ctx UNUSED_PARAM,
   if (request) {
 	coap_block_t block2 = { 0, 0, 0};
 	if (coap_get_block(request, COAP_OPTION_BLOCK2, &block2)){
-	  ret_data_t *item = RG_corresponding_data(session);
-	  RG_ret_data = item->RG_ret_data;	  	
+	  ret_data_t *item = SC_corresponding_data(session);
+	  RG_ret_data = item->SC_ret_data;	  	
           coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_PKCS7_CERTS, -1,
                                  RG_ret_data->length, RG_ret_data->s);
-          RG_verify_release(session, response);				 
+          SC_verify_release(session, response);				 
           return;
         } /* coap_get_block */
   } /* request */
@@ -1969,7 +1969,7 @@ RG_hnd_get_crts(coap_context_t *ctx UNUSED_PARAM,
   srv_cnt++;
   srv_get_crts_cnt++;  
   /* RG_ret_data has been used for blocked response => can be liberated for new request */
-  RG_ret_data = RG_new_return_data(session);
+  RG_ret_data = SC_new_return_data(session);
   response->code = COAP_RESPONSE_CODE(205); 
  
   int ok = brski_return_certificate(RG_ret_data);
@@ -1981,7 +1981,7 @@ RG_hnd_get_crts(coap_context_t *ctx UNUSED_PARAM,
   coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_PKCS7_CERTS, -1,
                                  RG_ret_data->length, RG_ret_data->s); 
-  RG_verify_release(session, response);				 
+  SC_verify_release(session, response);				 
   fprintf(stderr," get_crts server tid %04x, invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", response->tid, srv_get_crts_cnt, srv_cnt, (int)coap_nr_of_alloc());                                                   
 }
 
@@ -2010,12 +2010,12 @@ RG_hnd_post_sen(coap_context_t *ctx UNUSED_PARAM,
   if (request) {
 	coap_block_t block2 = { 0, 0, 0};
 	if (coap_get_block(request, COAP_OPTION_BLOCK2, &block2)){
-	  ret_data_t *item = RG_corresponding_data(session);
-	  RG_ret_data = item->RG_ret_data;	
+	  ret_data_t *item = SC_corresponding_data(session);
+	  RG_ret_data = item->SC_ret_data;	
           coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_PKCS7_CERTS, -1,
                                  RG_ret_data->length, RG_ret_data->s);
-	  RG_verify_release(session, response);			 
+	  SC_verify_release(session, response);			 
           return;
         } /* coap_get_block */
   } /* request */
@@ -2024,9 +2024,9 @@ RG_hnd_post_sen(coap_context_t *ctx UNUSED_PARAM,
   srv_cnt++;
   srv_post_sen_cnt++;  
    /* RG_ret_data has been used for blocked response => can be liberated for new request */
-  RG_ret_data = RG_new_return_data(session);
+  RG_ret_data = SC_new_return_data(session);
   if ((data == NULL) || (size == 0) || (RG_ret_data == NULL)){
-	  brski_error_return(COAP_RESPONSE_CODE(400), 
+	  server_error_return(COAP_RESPONSE_CODE(400), 
       response, "Did not find request data\n");
 	  return;
   }
@@ -2036,7 +2036,7 @@ RG_hnd_post_sen(coap_context_t *ctx UNUSED_PARAM,
   }
   if (fm_value != NULL) content_format = (fm_value[0]<<8) + fm_value[1]; 
   if (content_format != COAP_MEDIATYPE_APPLICATION_CBOR){
-	  brski_error_return(COAP_RESPONSE_CODE(400), 
+	  server_error_return(COAP_RESPONSE_CODE(400), 
       response, "Illegal content format\n");
 	  return;
   }
@@ -2047,12 +2047,12 @@ RG_hnd_post_sen(coap_context_t *ctx UNUSED_PARAM,
   else
       status = find_status_any(session);
   if (status == NULL){
-	  brski_error_return(COAP_RESPONSE_CODE(400), 
+	  server_error_return(COAP_RESPONSE_CODE(400), 
       response, "Did not find status belonging to session\n");
 	  return;
   }
   if (status->acceptable == VOUCHER_REJECTED){
-	  brski_error_return(COAP_RESPONSE_CODE(404), 
+	  server_error_return(COAP_RESPONSE_CODE(404), 
       response, "Voucher is not acceptable\n");
 	  return;
   }
@@ -2061,14 +2061,14 @@ RG_hnd_post_sen(coap_context_t *ctx UNUSED_PARAM,
 /* create certificate  */
   int8_t ok = brski_create_crt(RG_ret_data, data, size);
   if (ok != 0){
-	  brski_error_return(COAP_RESPONSE_CODE(404), 
+	  server_error_return(COAP_RESPONSE_CODE(404), 
       response, "CRT cannot be created\n");
 	  return;
   }
   coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_PKCS7_CERTS, -1,
                                  RG_ret_data->length, RG_ret_data->s); 
-  RG_verify_release(session, response);				 
+  SC_verify_release(session, response);				 
   fprintf(stderr," post_sen server tid %04x, invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", response->tid, srv_post_sen_cnt, srv_cnt, (int)coap_nr_of_alloc());                                                         
 }
 
@@ -2093,12 +2093,12 @@ RG_hnd_post_sren(coap_context_t *ctx UNUSED_PARAM,
   if (request) {
 	coap_block_t block2 = { 0, 0, 0};
 	if (coap_get_block(request, COAP_OPTION_BLOCK2, &block2)){
-	  ret_data_t *item = RG_corresponding_data(session);
-	  RG_ret_data = item->RG_ret_data;	  	
+	  ret_data_t *item = SC_corresponding_data(session);
+	  RG_ret_data = item->SC_ret_data;	  	
           coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_PKCS7_CERTS, -1,
                                  RG_ret_data->length, RG_ret_data->s);
-          RG_verify_release(session, response);				 
+          SC_verify_release(session, response);				 
           return;
         } /* coap_get_block */
   } /* request */
@@ -2108,9 +2108,9 @@ RG_hnd_post_sren(coap_context_t *ctx UNUSED_PARAM,
   srv_cnt++;
   srv_post_sren_cnt++; 
   /* RG_ret_data has been used for blocked response => can be liberated for new request */
-  RG_ret_data = RG_new_return_data(session);
+  RG_ret_data = SC_new_return_data(session);
   if ((data == NULL) || (size == 0) || (RG_ret_data == NULL)){
-	  brski_error_return(COAP_RESPONSE_CODE(400), 
+	  server_error_return(COAP_RESPONSE_CODE(400), 
       response, "Did not find request data\n");
 	  return;
   }
@@ -2121,14 +2121,14 @@ RG_hnd_post_sren(coap_context_t *ctx UNUSED_PARAM,
   else 
       status = find_status_any(session);
   if (status->acceptable == VOUCHER_REJECTED){
-	  brski_error_return(COAP_RESPONSE_CODE(404), 
+	  server_error_return(COAP_RESPONSE_CODE(404), 
       response, "Voucher is not acceptable\n");
 	  return;
   }
   response->code = COAP_RESPONSE_CODE(205); 
   int8_t ok = brski_create_crt(RG_ret_data, data, size);
   if (ok != 0){
-      brski_error_return(COAP_RESPONSE_CODE(404), 
+      server_error_return(COAP_RESPONSE_CODE(404), 
             response, "CRT cannot be created\n");
       return;
   }
@@ -2136,7 +2136,7 @@ RG_hnd_post_sren(coap_context_t *ctx UNUSED_PARAM,
   coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_PKCS7_CERTS, -1,
                                  RG_ret_data->length, RG_ret_data->s);
-  RG_verify_release(session, response);				 
+  SC_verify_release(session, response);				 
   fprintf(stderr," post_sren server tid %04x, invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", response->tid, srv_post_sren_cnt, srv_cnt, (int)coap_nr_of_alloc());                               
 }
 
@@ -2165,12 +2165,12 @@ RG_hnd_post_skg(coap_context_t *ctx UNUSED_PARAM,
   if (request) {
       coap_block_t block2 = { 0, 0, 0};
       if (coap_get_block(request, COAP_OPTION_BLOCK2, &block2)){
-	  ret_data_t *item = RG_corresponding_data(session);
-	  RG_ret_data = item->RG_ret_data;		
+	  ret_data_t *item = SC_corresponding_data(session);
+	  RG_ret_data = item->SC_ret_data;		
 	  coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_MULTIPART_CORE, -1,
                                  RG_ret_data->length, RG_ret_data->s);
-	  RG_verify_release(session, response);			 
+	  SC_verify_release(session, response);			 
           return;
         } /* coap_get_block */
   } /* request */
@@ -2180,9 +2180,9 @@ RG_hnd_post_skg(coap_context_t *ctx UNUSED_PARAM,
   srv_cnt++;
   srv_post_skg_cnt++;   
   /* RG_ret_data has been used for blocked response => can be liberated for new request */
-  RG_ret_data = RG_new_return_data(session);
+  RG_ret_data = SC_new_return_data(session);
   if ((data == NULL) || (size == 0) || (RG_ret_data == NULL)){
-	  brski_error_return(COAP_RESPONSE_CODE(400), 
+	  server_error_return(COAP_RESPONSE_CODE(400), 
       response, "Did not find request data\n");
 	  return;
   }
@@ -2219,7 +2219,7 @@ RG_hnd_post_skg(coap_context_t *ctx UNUSED_PARAM,
   coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_MULTIPART_CORE, -1,
                                  RG_ret_data->length, RG_ret_data->s);
-  RG_verify_release(session, response);				 
+  SC_verify_release(session, response);				 
   fprintf(stderr," post-skg server  tid %04x, invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", response->tid, srv_post_skg_cnt, srv_cnt, (int)coap_nr_of_alloc());                         
 }
 
@@ -2244,12 +2244,12 @@ RG_hnd_get_att(coap_context_t *ctx UNUSED_PARAM,
   if (request) {
 	coap_block_t block2 = { 0, 0, 0};
 	if (coap_get_block(request, COAP_OPTION_BLOCK2, &block2)){
-	  ret_data_t *item = RG_corresponding_data(session);
-	  RG_ret_data = item->RG_ret_data;	  	
+	  ret_data_t *item = SC_corresponding_data(session);
+	  RG_ret_data = item->SC_ret_data;	  	
           coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_CSRATTRS, -1,
                                  RG_ret_data->length, RG_ret_data->s);
-	  RG_verify_release(session, response);			 
+	  SC_verify_release(session, response);			 
           return;
         } /* coap_get_block */
   } /* request */
@@ -2259,9 +2259,9 @@ RG_hnd_get_att(coap_context_t *ctx UNUSED_PARAM,
   srv_cnt++;
   srv_get_att_cnt++;  
   /* RG_ret_data has been used for blocked response => can be liberated for new request */
-  RG_ret_data = RG_new_return_data(session);
+  RG_ret_data = SC_new_return_data(session);
   if (RG_ret_data == NULL){
-    brski_error_return(COAP_RESPONSE_CODE(400), 
+    server_error_return(COAP_RESPONSE_CODE(400), 
       response, "Did not find request data\n");
     return;
   }
@@ -2273,7 +2273,7 @@ RG_hnd_get_att(coap_context_t *ctx UNUSED_PARAM,
   coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_CSRATTRS, -1,
                                  RG_ret_data->length, RG_ret_data->s);
-  RG_verify_release(session, response);				 
+  SC_verify_release(session, response);				 
   fprintf(stderr," get_att server tid %04x, invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", response->tid, srv_get_att_cnt, srv_cnt, (int)coap_nr_of_alloc());                            
 }
 
@@ -2305,12 +2305,12 @@ RG_hnd_proxy(coap_context_t *ctx UNUSED_PARAM,
   if (request) {
 	coap_block_t block2 = { 0, 0, 0};
 	if (coap_get_block(request, COAP_OPTION_BLOCK2, &block2)){
-	  ret_data_t *item = RG_corresponding_data(session);
-	  RG_ret_data = item->RG_ret_data;	  	
+	  ret_data_t *item = SC_corresponding_data(session);
+	  RG_ret_data = item->SC_ret_data;	  	
           coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_CSRATTRS, -1,
                                  RG_ret_data->length, RG_ret_data->s);
-	  RG_verify_release(session, response);			 
+	  SC_verify_release(session, response);			 
           return;
         } /* coap_get_block */
   } /* request */
@@ -2323,7 +2323,7 @@ RG_hnd_proxy(coap_context_t *ctx UNUSED_PARAM,
   coap_add_data_blocked_response(resource, session, request, response, token,
                                  COAP_MEDIATYPE_APPLICATION_CSRATTRS, -1,
                                  data_len, resp_data); 
-  RG_verify_release(session, response);
+  SC_verify_release(session, response);
   fprintf(stderr," Proxy server invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", srv_proxy_cnt, srv_cnt, (int)coap_nr_of_alloc());                                                         
 }
 

@@ -53,7 +53,7 @@ static char* strndup(const char* s1, size_t n)
 
 #include <coap.h>
 #include <edhoc.h>
-#include "brski_util.h"
+#include "sv_cl_util.h"
 
 #ifndef min
 #define min(a,b) ((a) < (b) ? (a) : (b))

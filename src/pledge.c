@@ -51,7 +51,7 @@
 #include "JP_server.h"
 #include "brski.h"
 #include "client_request.h"
-#include "brski_util.h"
+#include "sv_cl_util.h"
 
 #ifndef WITHOUT_ASYNC
 /* This variable is used to mimic long-running tasks that require
@@ -777,7 +777,7 @@ JP_hnd_proxy(coap_context_t *ctx UNUSED_PARAM,
                 coap_pdu_t *response)
 {
 
-  brski_error_return(COAP_RESPONSE_CODE(201), 
+  server_error_return(COAP_RESPONSE_CODE(201), 
           response, "I am a brski join_proxy empty resource\n");
   return;  
 }
@@ -1555,9 +1555,7 @@ const char *state_names[] = { "START", "DISCOVERED", "CONNECTED", "RV_DONE", "VS
     if (coap_join_mcast_group(server->ctx, group4) == 0)
           coap_log(LOG_INFO," joint mulicast group with address: %s \n", group4);
   }
-  jp_set_context( server->ctx);
   init_resources( server->ctx);
-  JP_init_resources( server->ctx);
 #ifdef WITH_OSCORE
   oscore_ctx_t *osc_ctx = oscore_init();
   oscore_set_contexts();

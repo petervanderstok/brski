@@ -50,7 +50,6 @@
 #include "JP_server.h"
 #include "brski.h"
 #include "client_request.h"
-#include "brski_util.h"
 #include "pledge.h"
 
 /* TEST prints test results */

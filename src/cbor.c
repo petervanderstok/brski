@@ -45,7 +45,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "coap_debug.h"
-#include "brski_util.h"
 
 
 int

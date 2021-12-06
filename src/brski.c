@@ -13,7 +13,7 @@
 #include "cose.h"
 
 #include "client_request.h"
-#include "brski_util.h"
+#include "sv_cl_util.h"
 #include "oscore-mbedtls.h"
 
 #include <stdlib.h>

@@ -43,7 +43,7 @@
 
 #include "brski.h"
 #include "str.h"
-#include "brski_util.h"
+#include "sv_cl_util.h"
 #include "pdu.h"
 
 #if defined(MBEDTLS_SSL_CACHE_C)
