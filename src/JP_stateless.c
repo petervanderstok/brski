@@ -20,6 +20,11 @@
 #include "brski.h"
 #include <coap.h>
 
+
+#define IETF_IP          1
+#define IETF_IP6         2
+
+
 uint8_t debug_counter = 0;
 /*counters for statistics */
 static int srv_cnt = 0;                       /* total number of server invocations */
@@ -238,7 +243,9 @@ jp_encapsulate(uint8_t * jp_hdr, uint16_t port, uint8_t *IP_address, size_t addr
 	nr += cbor_put_array(&hdr, 5);
 	nr += cbor_put_bytes( &hdr, (uint8_t *)IP_address, address_len);
 	nr += cbor_put_number(&hdr, port);
-	nr += cbor_put_number(&hdr, family);    /* address family (ipv4/IPv6) */
+	uint16_t ietf_ip = IETF_IP;
+	if (family == AF_INET6)ietf_ip = IETF_IP6;
+	nr += cbor_put_number(&hdr, ietf_ip);    /* address type (IETF standard) (ipv4/IPv6) */
 	nr += cbor_put_number(&hdr, if_index);  /* interface index  */
     return nr;
 }
@@ -284,7 +291,8 @@ jp_decapsulate (uint8_t *payload, size_t len,
 	port = (uint16_t)mm;
 	ok = cbor_get_number(&data, &mm);
 	if (ok !=0)return 0;
-	family = (uint32_t)mm;  /* family */
+	family = AF_INET;
+	if (mm == IETF_IP6) family = AF_INET6;
 	ok = cbor_get_number(&data, &mm);
 	if_index = (uint8_t)mm;
 	if (ok !=0)return 0;
