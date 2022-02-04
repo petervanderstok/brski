@@ -289,7 +289,7 @@ uint8_t *read_file_mem(const char* file, size_t *length) {
     fclose(f);
     return NULL;
   }
-  buf = malloc(statbuf.st_size+1);
+  buf = coap_malloc(statbuf.st_size+1);
   if (!buf)
     return NULL;
 
