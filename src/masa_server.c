@@ -45,6 +45,7 @@
 #include "str.h"
 #include "sv_cl_util.h"
 #include "pdu.h"
+#include "coap_debug.h"
 
 #if defined(MBEDTLS_SSL_CACHE_C)
 #include "mbedtls/ssl_cache.h"
@@ -362,6 +363,7 @@ MS_hnd_post_rv(coap_string_t *signed_voucher_request, uint16_t ct,
   voucher_t *req_contents = NULL;
   if (ct == COAP_MEDIATYPE_APPLICATION_VOUCHER_COSE_CBOR){
 	  /* cose signed voucher_request  */  
+	  coap_log(LOG_DEBUG,"MS_hnd_post_rv brski_verify_cose_signature invoked with file_name %s,     ca_name  %s\n",file_name, ca_name);
 	  voucher_request = brski_verify_cose_signature(signed_voucher_request, file_name, ca_name);
   } else if (ct == COAP_MEDIATYPE_APPLICATION_VOUCHER_CMS_JSON){
       /* cms signed voucher_request */
@@ -698,11 +700,19 @@ reset:
 		skip_separator(&sbuf, end);
 		
      uint8_t *pbuf = (uint8_t *)sbuf;
+     
      if (masa_debug > 0){
 	    printf("payload is :\n");
-	    for ( uint qq = 0; qq < (int)(end-sbuf); qq++)printf("%c",pbuf[qq]);
+	    for ( uint qq = 0; qq < (int)(end-sbuf); qq++){
+	      char ch = '.';
+	      if (((pbuf[qq] < '9'+1) && (pbuf[qq] > '0'-1))
+	      || ((pbuf[qq] < 'z'+1) && (pbuf[qq] > 'a'-1))
+	      || ((pbuf[qq] < 'Z'+1) && (pbuf[qq] > 'A'-1))) ch = pbuf[qq];
+	      printf("%c",ch);
+	    }
 	    printf("\n");
-	 }
+     }
+	
 	 /*
 	  * 9. invoke server
 	  */
@@ -862,6 +872,7 @@ main(int argc, char **argv) {
       break;
     case 'v' :
       masa_debug = strtol(optarg, NULL, 10);
+      coap_set_log_level(masa_debug);
       break;
     case 'h' :
     default:
