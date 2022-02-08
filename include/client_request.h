@@ -181,11 +181,13 @@ coap_new_request(client_request_t *client,
                  unsigned char *data,
                  size_t length) ;
 
-// void set_payload_code( pl_code_t function);
-
 #define JP_STANDARD_PORT        0
 #define JP_DTLS_PORT            1
 #define JP_BRSKI_PORT           2
+
+#define CERTIFICATES_IN_MEMORY   0
+#define CERTIFICATES_ON_FILE     1
+
 
 void
 init_URIs(coap_address_t *addr, uint8_t proto, uint8_t port_type);
