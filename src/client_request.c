@@ -68,8 +68,7 @@ int8_t is_ready(void){
 	/* message received and no more blocks expected  */
 	return ready && !doing_getting_block;
 }
-int     use_pem_buf =0 ; /* Map these cert/key files into memory to test
-                               PEM_BUF logic if set */
+
 void make_ready(void){
   ready = 1;
 }
@@ -130,6 +129,7 @@ client_request_init(void){
 	CLIENT_REQUEST = temp;
 	CLIENT_REQUEST->ctx = NULL;
 	CLIENT_REQUEST->verify_cn_callback = NULL; 
+	CLIENT_REQUEST->use_pem_buf = CERTIFICATES_ON_FILE;
  	CLIENT_REQUEST->cert_file = NULL; /* Combined certificate and private key in PEM */
 	CLIENT_REQUEST->ca_file = NULL;   /* CA for cert_file - for cert checking in PEM */
 	CLIENT_REQUEST->root_ca_file = NULL; /* List of trusted Root CAs in PEM */
@@ -1021,7 +1021,7 @@ verify_pki_sni_callback(const char *sni,
   /* Preset with the defined keys */
   client_request_t *client =   (client_request_t *)arg;
   memset (&dtls_key, 0, sizeof(dtls_key));
-  if (use_pem_buf) {
+  if (client->use_pem_buf == CERTIFICATES_ON_FILE) {
     dtls_key.key_type = COAP_PKI_KEY_PEM;
     dtls_key.key.pem.public_cert = client->cert_file;
     dtls_key.key.pem.private_key = client->cert_file;
@@ -1061,7 +1061,6 @@ verify_pki_sni_callback(const char *sni,
 
 static coap_dtls_pki_t *
 setup_pki(client_request_t *client) {
-
   /* If general root CAs are defined */
   if (client->root_ca_file) {
     struct stat stbuf;
@@ -1105,7 +1104,7 @@ setup_pki(client_request_t *client) {
     memcpy(client->client_sni, "localhost", 9);
   client->dtls_pki.client_sni = client->client_sni;
   client->dtls_pki.pki_key.key_type = COAP_PKI_KEY_PEM;
-  
+  client->use_pem_buf = CERTIFICATES_ON_FILE;
   client->dtls_pki.pki_key.key.pem.public_cert = client->cert_file;
   client->dtls_pki.pki_key.key.pem.private_key = client->cert_file;
   client->dtls_pki.pki_key.key.pem.ca_file =     client->ca_file;
