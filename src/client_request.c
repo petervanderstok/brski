@@ -1014,27 +1014,26 @@ create_uri_options(client_request_t *client, uint16_t ct){
 
 
 static coap_dtls_key_t *
-verify_pki_sni_callback(const char *sni,
-                    void *arg
-) {
-  static coap_dtls_key_t dtls_key;
+verify_pki_sni_callback(const char *sni, void *arg) 
+{
   /* Preset with the defined keys */
   client_request_t *client =   (client_request_t *)arg;
-  memset (&dtls_key, 0, sizeof(dtls_key));
+  coap_dtls_key_t *dtls_key = &client->dtls_key;
+  memset(dtls_key, 0, sizeof(coap_dtls_key_t));
   if (client->use_pem_buf == CERTIFICATES_ON_FILE) {
-    dtls_key.key_type = COAP_PKI_KEY_PEM;
-    dtls_key.key.pem.public_cert = client->cert_file;
-    dtls_key.key.pem.private_key = client->cert_file;
-    dtls_key.key.pem.ca_file =     client->ca_file;
+    dtls_key->key_type = COAP_PKI_KEY_PEM;
+    dtls_key->key.pem.public_cert = client->cert_file;
+    dtls_key->key.pem.private_key = client->cert_file;
+    dtls_key->key.pem.ca_file =     client->ca_file;
   }
   else {
-    dtls_key.key_type = COAP_PKI_KEY_PEM_BUF;
-    dtls_key.key.pem_buf.ca_cert =         client->ca_mem;
-    dtls_key.key.pem_buf.public_cert =     client->cert_mem;
-    dtls_key.key.pem_buf.private_key =     client->cert_mem;
-    dtls_key.key.pem_buf.ca_cert_len =     client->ca_mem_len;
-    dtls_key.key.pem_buf.public_cert_len = client->cert_mem_len;
-    dtls_key.key.pem_buf.private_key_len = client->cert_mem_len;
+    dtls_key->key_type = COAP_PKI_KEY_PEM_BUF;
+    dtls_key->key.pem_buf.ca_cert =         client->ca_mem;
+    dtls_key->key.pem_buf.public_cert =     client->cert_mem;
+    dtls_key->key.pem_buf.private_key =     client->cert_mem;
+    dtls_key->key.pem_buf.ca_cert_len =     client->ca_mem_len;
+    dtls_key->key.pem_buf.public_cert_len = client->cert_mem_len;
+    dtls_key->key.pem_buf.private_key_len = client->cert_mem_len;
   }
   if (sni[0]) {
     size_t i;
@@ -1045,10 +1044,10 @@ verify_pki_sni_callback(const char *sni,
         coap_log(LOG_INFO, "Switching to using cert '%s' + ca '%s'\n",
                  valid_pki_snis.pki_sni_list[i].new_cert,
                  valid_pki_snis.pki_sni_list[i].new_ca);
-        dtls_key.key_type = COAP_PKI_KEY_PEM;
-        dtls_key.key.pem.public_cert = valid_pki_snis.pki_sni_list[i].new_cert;
-        dtls_key.key.pem.private_key = valid_pki_snis.pki_sni_list[i].new_cert;
-        dtls_key.key.pem.ca_file = valid_pki_snis.pki_sni_list[i].new_ca;
+        dtls_key->key_type = COAP_PKI_KEY_PEM;
+        dtls_key->key.pem.public_cert = valid_pki_snis.pki_sni_list[i].new_cert;
+        dtls_key->key.pem.private_key = valid_pki_snis.pki_sni_list[i].new_cert;
+        dtls_key->key.pem.ca_file = valid_pki_snis.pki_sni_list[i].new_ca;
         break;
       }
     }
@@ -1056,7 +1055,7 @@ verify_pki_sni_callback(const char *sni,
   else {
     coap_log(LOG_DEBUG, "SNI not requested\n");
   }
-  return &dtls_key;
+  return dtls_key;
 }
 
 static coap_dtls_pki_t *
