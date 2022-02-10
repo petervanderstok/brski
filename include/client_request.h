@@ -37,8 +37,9 @@ typedef struct client_request_t {
    coap_context_t *ctx;
    /* used for DTLS connection */
    coap_dtls_cn_callback_t verify_cn_callback; 
-   coap_dtls_pki_t dtls_pki;
+   coap_dtls_pki_t  dtls_pki;
    coap_dtls_cpsk_t dtls_psk;
+   coap_dtls_key_t  dtls_key;
    char    client_sni[256];
    char    *cert_file; /* Combined certificate and private key in PEM */
    char    *ca_file;   /* CA for cert_file - for cert checking in PEM */
