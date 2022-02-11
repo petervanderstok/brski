@@ -1631,8 +1631,7 @@ RG_hnd_post_vs(coap_context_t *ctx,
   coap_string_t *RG_ret_data = NULL;
   size_t size = 0; 
   coap_opt_iterator_t opt_iter;
-  coap_opt_t *opt = NULL;
-  const uint8_t *fm_value = NULL;   /* value of content-format option */  
+  coap_opt_t *opt = NULL; 
   uint16_t content_format  =  COAP_MEDIATYPE_TEXT_PLAIN;
 		/* check whether data need to be returend */
   if (request) {
@@ -1663,9 +1662,9 @@ RG_hnd_post_vs(coap_context_t *ctx,
   }
   opt = coap_check_option(request, COAP_OPTION_CONTENT_FORMAT, &opt_iter);
   if (opt){
-    fm_value = coap_opt_value(opt);
+    content_format = (int)coap_decode_var_bytes(coap_opt_value(opt),
+                                                  coap_opt_length(opt));
   }
-  if (fm_value != NULL)content_format = (fm_value[0]<<8) + fm_value[1];
   if (content_format == COAP_MEDIATYPE_APPLICATION_JSON) set_JSON(JSON_ON);
   else if (content_format == COAP_MEDIATYPE_APPLICATION_CBOR) set_JSON(JSON_OFF);
   else {
@@ -1788,7 +1787,6 @@ RG_hnd_post_rv(coap_context_t *ctx,
   size_t size = 0; 
   coap_opt_iterator_t opt_iter;
   coap_opt_t *opt = NULL;
-  const uint8_t *fm_value = NULL;   /* value of content-format option */
   uint16_t content_format  =  COAP_MEDIATYPE_TEXT_PLAIN;
 		/* check whether data need to be returend */
 
@@ -1822,14 +1820,14 @@ RG_hnd_post_rv(coap_context_t *ctx,
   response->code = COAP_RESPONSE_CODE(205);
   opt = coap_check_option(request, COAP_OPTION_CONTENT_FORMAT, &opt_iter);
   if (opt){
-    fm_value = coap_opt_value(opt);
+    content_format = (int)coap_decode_var_bytes(coap_opt_value(opt),
+                                                  coap_opt_length(opt));
   }
   coap_string_t *voucher_request = NULL;
   coap_string_t signed_voucher_request = {.s = data, .length = size};
   char file_name[] = REGIS_CLIENT_DER;    /* contains pledge certificate in DER */
   char ca_name[] = PLEDGE_CA;
   voucher_t *req_contents = NULL;
-  if (fm_value != NULL)content_format = (fm_value[0]<<8) + fm_value[1];
   if (content_format == COAP_MEDIATYPE_APPLICATION_VOUCHER_COSE_CBOR){
 	  /* signed voucher_request  */
 	  voucher_request = brski_verify_cose_signature(&signed_voucher_request, file_name, ca_name);
@@ -2004,7 +2002,6 @@ RG_hnd_post_sen(coap_context_t *ctx UNUSED_PARAM,
   size_t size = 0; 
   coap_opt_iterator_t opt_iter;
   coap_opt_t *opt = NULL;
-  const uint8_t *fm_value = NULL;   /* value of content-format option */
   int content_format =  COAP_MEDIATYPE_TEXT_PLAIN;
 		/* check whether data need to be returend */
   if (request) {
@@ -2032,9 +2029,9 @@ RG_hnd_post_sen(coap_context_t *ctx UNUSED_PARAM,
   }
   opt = coap_check_option(request, COAP_OPTION_CONTENT_FORMAT, &opt_iter);
   if (opt){
-    fm_value = coap_opt_value(opt);
+    content_format = (int)coap_decode_var_bytes(coap_opt_value(opt),
+                                                  coap_opt_length(opt));
   }
-  if (fm_value != NULL) content_format = (fm_value[0]<<8) + fm_value[1]; 
   if (content_format != COAP_MEDIATYPE_APPLICATION_CBOR){
 	  server_error_return(COAP_RESPONSE_CODE(400), 
       response, "Illegal content format\n");
