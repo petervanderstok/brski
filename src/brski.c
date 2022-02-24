@@ -27,6 +27,7 @@
 
 #include <mbedtls/x509_crt.h>
 #include <mbedtls/asn1.h>
+#include <mbedtls/asn1write.h>
 #include <mbedtls/ecp.h>
 #include <mbedtls/pk.h>
 #include <mbedtls/md.h>
@@ -36,6 +37,7 @@
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/error.h>
 #include <mbedtls/config.h>
+#include <mbedtls/oid.h>
 
 #include <openssl/pem.h>
 #include <openssl/cms.h>
@@ -240,6 +242,432 @@ find_sid(coap_string_t *text,uint8_t type){
 	return 0;
 }
 
+/* ROUTINES to generate CERTIFICATE and KEY */
+
+#define FORMAT_PEM              0
+#define FORMAT_DER              1
+// also used to define CA = TRUE/FALSE in certificate
+#define CREATE_CA               1
+#define CREATE_CERT             0
+
+#define DFL_NOT_BEFORE          "20010101000000"
+#define DFL_NOT_AFTER           "20301231235959"
+#define ISSUER_NAME             "CN=registrar.vanderstok.tech,O=vanderstok,OU=home,L=Helmond,C=NL";
+#define SUBJECT_NAME            "CN=registrar.vanderstok.tech,O=vanderstok,OU=home_ops,L=Helmond,C=NL";
+#define SERIAL_NUMBER_FILE      "./certificates/brski/serial"
+
+/* 
+ * read-serial
+ * returns certificate serial number 
+ */
+static char *
+read_serial(){
+#define BN_LEN      64
+  size_t length = 0;
+  char serial_file[] = SERIAL_NUMBER_FILE;
+  uint8_t *buf = read_file_mem(serial_file, &length);
+  if (buf == NULL) return NULL;
+  length = length -1;
+  while (buf[length -1] < '0'){ /* remove spurious cr, lf and 0 */
+     length = length -1;
+     buf[length] = 0;
+  }
+  char obuf[BN_LEN+1]; 
+  memset(obuf,'0',BN_LEN);
+  memcpy(obuf + BN_LEN -length, buf, length); 
+ 
+  char tmp[BN_LEN+1];
+  tmp[BN_LEN] = 0;
+  struct bn big;
+  struct bn one;
+  struct bn res;
+  bignum_init(&big);
+  bignum_init(&one);
+  bignum_init(&res);
+  bignum_from_int(&one, (DTYPE_TMP)1);
+  bignum_from_string(&big, obuf, BN_LEN);
+  bignum_to_string(&big, tmp, BN_LEN);
+  bignum_add(&big, &one, &res);
+  bignum_to_string(&res, tmp, BN_LEN);
+  coap_string_t contents = { .s = (uint8_t *)tmp, .length = strlen(tmp)};
+  write_file_mem(serial_file, &contents);
+  return (char *)buf;
+}
+
+/*
+ * brski_combine_cert__key
+ * appends Registrar key in key-file to registrar certificate in cert_file to comb_file
+ * returns o => Ok;  else error number
+ */
+
+int8_t
+brski_combine_cert_key( const char *key_file, const char *cert_file, const char *comb_file)
+{
+    int ok = -1;  /* error return */
+    FILE *kf = fopen(key_file, "r");;
+    FILE *cf = fopen(cert_file, "r");;
+    FILE *of = fopen(comb_file, "w");;
+  uint8_t ch = 0;
+  struct stat statbuf_k;
+  struct stat statbuf_c;
+
+  if (!kf){
+    coap_log(LOG_ERR,"cannot open for read  file %s \n",key_file);
+    return ok;
+  }
+  if (!cf){
+    coap_log(LOG_ERR,"cannot open for read  file %s \n",cert_file);
+    return ok;
+  }
+  if (!of){
+    coap_log(LOG_ERR,"cannot open for write  file %s \n",comb_file);
+    return ok; 
+  }  
+  if (fstat(fileno(kf), &statbuf_k) == -1) {
+    coap_log(LOG_ERR,"cannot read  file %s \n",key_file);
+    fclose(kf); fclose(cf); fclose(of);
+    return ok;
+  }
+  if (fstat(fileno(cf), &statbuf_c) == -1) {
+    coap_log(LOG_ERR,"cannot read  file %s \n",cert_file);
+    fclose(kf); fclose(cf); fclose(of);
+    return ok;
+  }  
+  /* copy certificate to combined file */
+  for (uint qq = 0; qq < statbuf_c.st_size; qq++){
+    if (fread(&ch, 1, 1, cf) != 1) {
+      coap_log(LOG_ERR,"cannot read  file %s \n",cert_file);
+      fclose(kf); fclose(cf); fclose(of);
+      return ok;
+    }
+    if (fwrite( &ch, 1, 1, of) != 1){
+      coap_log(LOG_ERR,"cannot write to  file %s \n",comb_file);
+      fclose(kf); fclose(cf); fclose(of);
+      return ok;
+    }
+  }
+  fclose(cf);
+  /* copy key file to combined file */
+  for (uint qq = 0; qq < statbuf_k.st_size; qq++){
+    if (fread(&ch, 1, 1, kf) != 1) {
+      coap_log(LOG_ERR,"cannot read  file %s \n",key_file);
+      fclose(kf); fclose(of);
+      return ok;
+    }
+    if (fwrite( &ch, 1, 1, of) != 1){
+      coap_log(LOG_ERR,"cannot write to  file %s \n",comb_file);
+      fclose(kf); fclose(of);
+      return ok;
+    }
+  } 
+  ok = 0; 
+  fclose(kf); fclose(of);
+  return ok;
+}
+
+/*
+ * write_private_key
+ * Writes  Registrar key to file
+ * returns o => Ok;  else error number
+ */
+
+static int8_t
+write_private_key( mbedtls_pk_context *key, const char *output_file, int format)
+{
+#define MEM_SIZE    16000
+    int ok = -1;
+    FILE *f;
+    unsigned char output_buf[MEM_SIZE];
+    unsigned char *c = output_buf;
+    size_t len = 0;
+
+    memset(output_buf, 0, MEM_SIZE);
+    if( format == FORMAT_PEM )
+    {
+        CHECK(mbedtls_pk_write_key_pem( key, output_buf, MEM_SIZE ) );
+        len = strlen( (char *) output_buf );
+    }
+    else
+    {
+        CHECK(mbedtls_pk_write_key_der( key, output_buf, MEM_SIZE ) );
+        len = ok;
+        c = output_buf + sizeof(output_buf) - len;
+    }
+    if( ( f = fopen( output_file, "wb" ) ) == NULL ) {
+      coap_log(LOG_ERR," cannot open key file %s\n", output_file);
+      goto exit;
+    }
+    if( fwrite( c, 1, len, f ) != len ) {
+      coap_log(LOG_ERR," cannot write to key file %s \n", output_file);
+      goto exit1;
+    }
+    ok = 0;
+exit1:
+    fclose( f );
+exit:
+   return ok;
+}
+
+    
+/*
+ * brski_create_key
+ * creates and ecp key for Registrar
+ * uses secp256r1
+ * returns 0 => Ok; else returns 1
+ */
+
+int8_t
+brski_create_key( char *key_filename)
+{
+    int ok = 1;
+    mbedtls_pk_context key;
+    char buf[1024];    /* buf for drbg */
+    mbedtls_mpi N, P, Q, D, E, DP, DQ, QP;
+    mbedtls_entropy_context entropy;
+    mbedtls_ctr_drbg_context ctr_drbg;
+    const char *pers = "gen_key";
+
+    /*
+     * Set to sane values
+     */
+
+    mbedtls_mpi_init( &N ); mbedtls_mpi_init( &P ); mbedtls_mpi_init( &Q );
+    mbedtls_mpi_init( &D ); mbedtls_mpi_init( &E ); mbedtls_mpi_init( &DP );
+    mbedtls_mpi_init( &DQ ); mbedtls_mpi_init( &QP );
+
+    mbedtls_pk_init( &key );
+    mbedtls_ctr_drbg_init( &ctr_drbg );
+    memset( buf, 0, sizeof( buf ) );
+    int opt_format              = FORMAT_PEM;
+    
+    const mbedtls_ecp_curve_info *curve_info = mbedtls_ecp_curve_info_from_name( "secp256r1");
+    if (curve_info == NULL){
+      coap_log(LOG_ERR,"Cannot find ecp curve secp256r1 \n");
+      goto exit;
+    }
+    int opt_ec_curve = curve_info->grp_id;
+    mbedtls_entropy_init( &entropy );
+
+    CHECK( mbedtls_ctr_drbg_seed( &ctr_drbg, mbedtls_entropy_func, &entropy,
+                               (const unsigned char *) pers,
+                               strlen( pers ) ) );
+ 
+    /*
+     * 1.1. Generate the key
+     */
+    CHECK(mbedtls_pk_setup( &key,
+            mbedtls_pk_info_from_type( MBEDTLS_PK_ECKEY ) ) );
+    CHECK(mbedtls_ecp_gen_key( (mbedtls_ecp_group_id) opt_ec_curve,
+                                   mbedtls_pk_ec( key ),
+                                   mbedtls_ctr_drbg_random, &ctr_drbg ));
+    /*
+     * 1.2 show the key for debugging
+     */
+    if( mbedtls_pk_get_type( &key ) == MBEDTLS_PK_ECKEY )
+    {
+        mbedtls_ecp_keypair *ecp = mbedtls_pk_ec( key );
+        coap_log(LOG_DEBUG, "private key uses curve: %s\n",
+                mbedtls_ecp_curve_info_from_grp_id( ecp->grp.id )->name );
+        mbedtls_mpi_write_file( "X_Q:   ", &ecp->Q.X, 16, NULL );
+        mbedtls_mpi_write_file( "Y_Q:   ", &ecp->Q.Y, 16, NULL );
+        mbedtls_mpi_write_file( "D:     ", &ecp->d  , 16, NULL );
+    }
+    else {
+        coap_log(LOG_WARNING,"  ! key type not supported\n");
+	goto exit;
+    }
+    /*
+     * 1.3 Export key
+     */
+    CHECK(write_private_key( &key, key_filename, opt_format ) );
+     ok = 0;
+exit:
+    mbedtls_mpi_free( &N ); mbedtls_mpi_free( &P ); mbedtls_mpi_free( &Q );
+    mbedtls_mpi_free( &D ); mbedtls_mpi_free( &E ); mbedtls_mpi_free( &DP );
+    mbedtls_mpi_free( &DQ ); mbedtls_mpi_free( &QP );
+    mbedtls_pk_free( &key );
+    mbedtls_ctr_drbg_free( &ctr_drbg );
+    mbedtls_entropy_free( &entropy );
+    return ok;
+}
+
+/* write-certificate
+ * writes certificate for registrar to output_file
+ */
+static
+int write_certificate( mbedtls_x509write_cert *crt, const char *output_file,
+                       int (*f_rng)(void *, unsigned char *, size_t),
+                       void *p_rng )
+{
+    int ok = -1;
+    FILE *f;
+    unsigned char output_buf[4096];
+    size_t len = 0;
+    memset( output_buf, 0, sizeof(output_buf) );
+    CHECK(mbedtls_x509write_crt_pem( crt, output_buf, 4096,
+                                           f_rng, p_rng ) );
+    len = strlen( (char *) output_buf );
+    if( ( f = fopen( output_file, "w" ) ) == NULL ){
+        coap_log(LOG_ERR,"could not open file %s \n", output_file);
+	goto exit;
+    }
+    if( fwrite( output_buf, 1, len, f ) != len )
+    {
+        coap_log(LOG_ERR,"could not write to %s \n", output_file);
+	goto exit1;
+    }
+    ok = 0;
+exit1:
+    fclose( f );
+exit:
+    return( ok);
+}
+
+
+/*       
+ * create certificate 
+ * is_ca = 0: self_signed  certicate
+ * is_ca = 1: certificate to be signed by issuer
+ * returns 0 => Ok
+ */
+ int8_t
+ brski_create_certificate( char *issuer_crt_file,
+                              char *subject_crt_file,
+                              char *issuer_key_name,
+                              char *subject_key_name)
+ {
+    int ok = 1;  /* failure return values */
+    int is_ca = CREATE_CERT;
+    if (subject_crt_file == NULL) is_ca = CREATE_CA;
+    mbedtls_x509_crt issuer_crt;
+    mbedtls_pk_context loaded_issuer_key, loaded_subject_key;
+    mbedtls_pk_context *issuer_key = &loaded_issuer_key,
+                *subject_key = &loaded_subject_key;
+    char buf[1024];
+    char ret_issuer_name[256];
+    mbedtls_x509write_cert crt;
+    mbedtls_mpi serial;
+    mbedtls_entropy_context entropy;
+    mbedtls_ctr_drbg_context ctr_drbg;
+    const char *pers  = "crt example app";
+    const char *issuer_name = NULL;
+    const char *subject_name = NULL;
+    int version       = 2;
+    mbedtls_md_type_t md_alg = MBEDTLS_MD_SHA256;
+    char *serial_nb = NULL;
+    char not_before[] = DFL_NOT_BEFORE;
+    char not_after[]  = DFL_NOT_AFTER;
+    int max_pathlen  = -1;
+    unsigned char  key_usage =  0;
+    char issuer_pwd[] = "watnietweet";
+    char subject_pwd[] = "watnietweet";
+    char *output_file  = NULL;
+    key_usage  |= MBEDTLS_X509_KU_DIGITAL_SIGNATURE;
+    key_usage  |= MBEDTLS_X509_KU_KEY_CERT_SIGN;
+    key_usage  |= MBEDTLS_X509_KU_CRL_SIGN;
+
+    /*
+     * Set to sane values
+     */
+    mbedtls_x509write_crt_init( &crt );
+    mbedtls_pk_init( issuer_key );
+    mbedtls_pk_init( subject_key );
+    mbedtls_mpi_init( &serial );
+    mbedtls_ctr_drbg_init( &ctr_drbg );
+    mbedtls_entropy_init( &entropy );
+    mbedtls_x509_crt_init( &issuer_crt );
+    memset( buf, 0, sizeof(buf) );
+    issuer_name  = ISSUER_NAME;
+    subject_name = SUBJECT_NAME;
+    serial_nb = read_serial();
+    /*
+     * 0. Seed the PRNG
+     */
+    CHECK(mbedtls_ctr_drbg_seed( &ctr_drbg, mbedtls_entropy_func, &entropy,
+                               (const unsigned char *) pers,
+                               strlen( pers ) ) );
+    // Parse hexadecimal serial to MPI
+    //
+    CHECK(mbedtls_mpi_read_string( &serial, 16, serial_nb ) );
+    /*
+     * 1.1. Load the keys
+     */
+    if( is_ca == CREATE_CERT  )
+    {
+    // Check if key and issuer certificate match when not self-signed
+    //
+        CHECK(mbedtls_x509_crt_parse_file( &issuer_crt, issuer_crt_file ) );
+        CHECK(mbedtls_x509_dn_gets( ret_issuer_name, sizeof(ret_issuer_name),
+                                 &issuer_crt.subject ));
+        issuer_name = ret_issuer_name;
+        CHECK(mbedtls_pk_parse_keyfile( subject_key, subject_key_name,
+                                 subject_pwd ));	
+    }
+    CHECK(mbedtls_pk_parse_keyfile( issuer_key, issuer_key_name,
+                             issuer_pwd ));
+    if( is_ca== CREATE_CERT) {
+      CHECK(mbedtls_pk_check_pair( &issuer_crt.pk, issuer_key ));
+    }		              
+    if (is_ca == CREATE_CA){
+/* self sign:  issuer and subject are identical */
+        subject_name = issuer_name;
+        subject_key = issuer_key;
+	output_file = issuer_crt_file;
+    } else output_file = subject_crt_file;
+
+    mbedtls_x509write_crt_set_subject_key( &crt, subject_key );
+    mbedtls_x509write_crt_set_issuer_key( &crt, issuer_key );
+    /*
+     * 1.0. Check the names for validity
+     */
+    CHECK(mbedtls_x509write_crt_set_subject_name( &crt, subject_name ) );
+    CHECK(mbedtls_x509write_crt_set_issuer_name( &crt, issuer_name ) );
+    mbedtls_x509write_crt_set_version( &crt, version );
+    mbedtls_x509write_crt_set_md_alg( &crt, md_alg );
+    CHECK(mbedtls_x509write_crt_set_serial( &crt, &serial ));
+    CHECK(mbedtls_x509write_crt_set_validity( &crt, not_before, not_after ));
+    CHECK(mbedtls_x509write_crt_set_basic_constraints( &crt, is_ca,
+							     max_pathlen ));
+    CHECK(mbedtls_x509write_crt_set_subject_key_identifier (&crt));	
+    CHECK(mbedtls_x509write_crt_set_authority_key_identifier (&crt));
+    CHECK(mbedtls_x509write_crt_set_key_usage( &crt, key_usage ));   
+     
+/* construct the asn_buf for extended key usage */       
+ #define MBEDTLS_OID_REGIS_AUTH                 MBEDTLS_OID_KP "\x1c"
+       uint8_t asn_buf[46];
+       memset(asn_buf, 0, sizeof(asn_buf));
+       uint8_t *p = asn_buf + sizeof(asn_buf);
+       CHECK(mbedtls_asn1_write_oid( &p, asn_buf,
+                            MBEDTLS_OID_SERVER_AUTH, sizeof(MBEDTLS_OID_SERVER_AUTH)-1 ));
+       CHECK(mbedtls_asn1_write_oid( &p, asn_buf,
+                            MBEDTLS_OID_CLIENT_AUTH, sizeof(MBEDTLS_OID_CLIENT_AUTH)-1 ));
+       CHECK(mbedtls_asn1_write_oid( &p, asn_buf,
+                            MBEDTLS_OID_REGIS_AUTH, sizeof(MBEDTLS_OID_REGIS_AUTH)-1 ));
+       CHECK(mbedtls_asn1_write_tag( &p, asn_buf, MBEDTLS_ASN1_BMP_STRING ));
+       CHECK(mbedtls_asn1_write_tag( &p, asn_buf, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE ));	    		    			    
+       size_t asn_len = sizeof(asn_buf) - (size_t)(p - asn_buf);      
+       CHECK(mbedtls_x509_set_extension( &crt.extensions, MBEDTLS_OID_EXTENDED_KEY_USAGE, sizeof(MBEDTLS_OID_EXTENDED_KEY_USAGE) - 1,
+				 0 , p, asn_len));
+    /*
+     * 1.2. Writing the certificate
+     */
+    CHECK(write_certificate( &crt, output_file,
+                                   mbedtls_ctr_drbg_random, &ctr_drbg ) );  // to certificate file
+  
+    ok = 0;
+
+exit:
+    coap_free(serial_nb);
+    mbedtls_x509_crt_free( &issuer_crt );
+    mbedtls_x509write_crt_free( &crt );
+    mbedtls_pk_free( subject_key );
+    mbedtls_pk_free( issuer_key );
+    mbedtls_mpi_free( &serial );
+    mbedtls_ctr_drbg_free( &ctr_drbg );
+    mbedtls_entropy_free( &entropy );
+    return ok;
+}
+
 /* return_oid
  * returns value of specified OID of x509 v3 ca certificate 
  * returns Ok =0 , Nok 1
@@ -324,7 +752,7 @@ return_subject_ski( mbedtls_x509_buf *asn, coap_string_t *key_id){
 }
 
 /* return_authority_aki
- * returns subject key identifier in subject of x509 v3 ca certificate 
+ * returns authority key identifier in subject of x509 v3 ca certificate 
  * returns Ok =0 , Nok 1
  * IN:  asn is pointer to subject asn1 string
  * OUT: key_id contains returned key identifier
@@ -2313,6 +2741,7 @@ brski_check_signature(char *cert_file_name, uint8_t *prot_buf, uint8_t *sig_buf,
     fprintf(stderr,"\n");
 */   
     CHECK(mbedtls_sha256_ret( Sig_structure, nr, hash, 0 ) );
+    coap_log(LOG_DEBUG,"brski_check_signature parses cert-file in %s\n",cert_file_name);
     CHECK(mbedtls_x509_crt_parse_file( &crt, cert_file_name)); 
 /*     
     fprintf(stderr,"verify_cose_signature with %s \n", cert_file_name);  
@@ -2461,8 +2890,10 @@ brski_verify_cose_signature(coap_string_t *signed_document, char *cert_file_name
     mbedtls_pk_context  my_key;
     mbedtls_pk_context *key = &my_key;
     mbedtls_pk_init( key);
+    coap_log(LOG_DEBUG,"brksi_verify_cose_signatue parses certificate in %s \n", cert_file_name);
     CHECK(mbedtls_x509_crt_parse_file( &crt, cert_file_name));
-    CHECK(mbedtls_x509_crt_parse_file( &ca, ca_file_name));   
+    coap_log(LOG_DEBUG,"brksi_verify_cose_signatue parses ca certificate in %s \n", ca_file_name);
+    CHECK(mbedtls_x509_crt_parse_file( &ca, ca_file_name)); 
     ok = verify_cert_date( &crt, &ca);
     if (ok != 0){
 		coap_log(LOG_ERR,"Certificate %s is not valid \n", cert_file_name);
@@ -2665,7 +3096,6 @@ brski_json_readstatus(coap_string_t *log, status_t *status){
 	status->acceptable = conclusion;  
     return 0;        
 }
-
 
 
 /* brski_cbor_readstatus 
