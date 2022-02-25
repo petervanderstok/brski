@@ -468,9 +468,11 @@ brski_create_key( char *key_filename)
         mbedtls_ecp_keypair *ecp = mbedtls_pk_ec( key );
         coap_log(LOG_DEBUG, "private key uses curve: %s\n",
                 mbedtls_ecp_curve_info_from_grp_id( ecp->grp.id )->name );
-        mbedtls_mpi_write_file( "X_Q:   ", &ecp->Q.X, 16, NULL );
-        mbedtls_mpi_write_file( "Y_Q:   ", &ecp->Q.Y, 16, NULL );
-        mbedtls_mpi_write_file( "D:     ", &ecp->d  , 16, NULL );
+	if (coap_get_log_level() > LOG_DEBUG-1){
+          mbedtls_mpi_write_file( "X_Q:   ", &ecp->Q.X, 16, NULL );
+          mbedtls_mpi_write_file( "Y_Q:   ", &ecp->Q.Y, 16, NULL );
+          mbedtls_mpi_write_file( "D:     ", &ecp->d  , 16, NULL );
+        }
     }
     else {
         coap_log(LOG_WARNING,"  ! key type not supported\n");
