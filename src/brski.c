@@ -249,6 +249,7 @@ find_sid(coap_string_t *text,uint8_t type){
 // also used to define CA = TRUE/FALSE in certificate
 #define CREATE_CA               1
 #define CREATE_CERT             0
+#define HEX_RADIX               16
 
 #define DFL_NOT_BEFORE          "20010101000000"
 #define DFL_NOT_AFTER           "20301231235959"
@@ -256,6 +257,24 @@ find_sid(coap_string_t *text,uint8_t type){
 #define SUBJECT_NAME            "CN=registrar.vanderstok.tech,O=vanderstok,OU=home_ops,L=Helmond,C=NL";
 #define SERIAL_NUMBER_FILE      "./certificates/brski/serial"
 
+/* filter_time
+ * filters YYYYMMDDhhmmss form date and store intp filter
+ */
+static void
+filter_time(char *date, char *filter){
+    int in = 0;
+    int out = 0;
+    while (date[in] != 0){
+	if (('0'-1 < date[in]) && (date[in] < '9'+1)){
+	    filter[out] = date[in];
+	    out++;
+	}
+	in++;
+    }
+    filter[out] = 0;
+}
+
+   
 /* 
  * read-serial
  * returns certificate serial number 
@@ -295,7 +314,7 @@ read_serial(){
 }
 
 /*
- * brski_combine_cert__key
+ * brski_combine_cert_key
  * appends Registrar key in key-file to registrar certificate in cert_file to comb_file
  * returns o => Ok;  else error number
  */
@@ -465,7 +484,7 @@ brski_create_key( char *key_filename)
      */
     if( mbedtls_pk_get_type( &key ) == MBEDTLS_PK_ECKEY )
     {
-        mbedtls_ecp_keypair *ecp = mbedtls_pk_ec( key );
+        mbedtls_ecp_keypair *ecp = mbedtls_pk_ec( key ); 
         coap_log(LOG_DEBUG, "private key uses curve: %s\n",
                 mbedtls_ecp_curve_info_from_grp_id( ecp->grp.id )->name );
 	if (coap_get_log_level() > LOG_DEBUG-1){
@@ -525,6 +544,7 @@ exit:
     return( ok);
 }
 
+#define     DATE_SIZE    100
 
 /*       
  * create certificate 
@@ -557,8 +577,9 @@ exit:
     int version       = 2;
     mbedtls_md_type_t md_alg = MBEDTLS_MD_SHA256;
     char *serial_nb = NULL;
-    char not_before[] = DFL_NOT_BEFORE;
-    char not_after[]  = DFL_NOT_AFTER;
+    char not_before[DATE_SIZE];
+    char not_after[DATE_SIZE];
+    char tm_temp[DATE_SIZE];
     int max_pathlen  = -1;
     unsigned char  key_usage =  0;
     char issuer_pwd[] = "watnietweet";
@@ -581,7 +602,23 @@ exit:
     memset( buf, 0, sizeof(buf) );
     issuer_name  = ISSUER_NAME;
     subject_name = SUBJECT_NAME;
+    /*
+     * read serial number from file and increase
+     */
     serial_nb = read_serial();
+    /*
+     * set start and end dates
+     */
+    time_t rawtime;
+    time(&rawtime);
+    struct tm tm_buf;
+    memset(&tm_buf, 0, sizeof(struct tm));   
+    struct tm *current = gmtime_r(&rawtime, &tm_buf); 
+    strftime(tm_temp, DATE_SIZE, "%Y-%m-%dT%H:%M:%SZ", current);
+    filter_time(tm_temp, not_before);
+    current->tm_year = current->tm_year + VALIDITY_YEARS;
+    strftime(tm_temp, DATE_SIZE, "%Y-%m-%dT%H:%M:%SZ", current);   
+    filter_time(tm_temp, not_after);    
     /*
      * 0. Seed the PRNG
      */
@@ -590,7 +627,7 @@ exit:
                                strlen( pers ) ) );
     // Parse hexadecimal serial to MPI
     //
-    CHECK(mbedtls_mpi_read_string( &serial, 16, serial_nb ) );
+    CHECK(mbedtls_mpi_read_string( &serial, HEX_RADIX, serial_nb ) );
     /*
      * 1.1. Load the keys
      */
@@ -823,9 +860,6 @@ return_subject_sn( mbedtls_x509_name *asn, char **sn, size_t *sn_len){
 brski_create_crt(coap_string_t *return_cert, uint8_t *data, size_t len){
 #define CRT_SUBJECT_PWD         NULL
 #define CRT_ISSUER_PWD          "watnietweet"
-#define CRT_NOT_BEFORE          "20010101000000"
-#define CRT_NOT_AFTER           "20301231235959"
-#define CRT_SERIAL              "1"
 #define CRT_SELFSIGN            0
 #define CRT_IS_CA               0
 #define CRT_MAX_PATHLEN         -1
@@ -839,15 +873,15 @@ brski_create_crt(coap_string_t *return_cert, uint8_t *data, size_t len){
 #define CRT_BUF_SIZE            1024
     if (return_cert == NULL)return 1;
 	int ret = 1;
-    const char               *issuer_pwd;     /* password for the issuer key file     */
-    const char               *issuer_crt_name;/* filename for the crt file            */
-    const char               *opt_serial;     /* serial number string                 */
-    const char               *issuer_key_name; /* filename of the issuer key file      */
-    const char               *not_before;     /* validity period not before           */
-    const char               *not_after;      /* validity period not after            */
-    int                      is_ca;           /* is a CA certificate                  */
-    int                      max_pathlen;     /* maximum CA path length               */
-    unsigned char            ns_cert_type;    /* NS cert type                         */
+    const char               *issuer_pwd;               /* password for the issuer key file     */
+    const char               *issuer_crt_name;          /* filename for the crt file            */
+    const char               *issuer_key_name;          /* filename of the issuer key file      */
+    char                     tm_temp[DATE_SIZE];        /* long value of time string            */
+    char                     not_before[DATE_SIZE];     /* validity period not before           */
+    char                     not_after[DATE_SIZE];      /* validity period not after            */
+    int                      is_ca;                     /* is a CA certificate                  */
+    int                      max_pathlen;               /* maximum CA path length               */
+    unsigned char            ns_cert_type;              /* NS cert type                         */
     mbedtls_x509_crt         issuer_crt;
     mbedtls_pk_context       loaded_issuer_key, loaded_subject_key;
     mbedtls_pk_context       *issuer_key = &loaded_issuer_key,
@@ -857,6 +891,7 @@ brski_create_crt(coap_string_t *return_cert, uint8_t *data, size_t len){
     mbedtls_x509_csr          csr;
     mbedtls_x509write_cert    crt;
     mbedtls_mpi               serial;
+    char                      *serial_nb = NULL;
     mbedtls_entropy_context   entropy;
     mbedtls_ctr_drbg_context  ctr_drbg;
     mbedtls_md_type_t         md;
@@ -877,7 +912,6 @@ brski_create_crt(coap_string_t *return_cert, uint8_t *data, size_t len){
     mbedtls_x509_csr_init( &csr );
     mbedtls_x509_crt_init( &issuer_crt );
 
-    opt_serial      = CRT_SERIAL;
     issuer_crt_name = CA_REGIS_CRT;
     issuer_key_name = CA_REGIS_KEY;
     issuer_pwd      = CRT_ISSUER_PWD;
@@ -886,12 +920,25 @@ brski_create_crt(coap_string_t *return_cert, uint8_t *data, size_t len){
     version         = CRT_VERSION;
     md              = CRT_DIGEST;
     ns_cert_type    = CRT_NS_CERT_TYPE;  
-    not_before      = CRT_NOT_BEFORE;
-    not_after       = CRT_NOT_AFTER; 
     is_ca           = CRT_IS_CA;
     max_pathlen     = CRT_MAX_PATHLEN;
-    
-
+   /*
+    * read serial number from file and increase
+    */
+    serial_nb = read_serial();   
+    /*
+     * set start and end dates
+     */
+    time_t rawtime;
+    time(&rawtime);
+    struct tm tm_buf;
+    memset(&tm_buf, 0, sizeof(struct tm));   
+    struct tm *current = gmtime_r(&rawtime, &tm_buf); 
+    strftime(tm_temp, DATE_SIZE, "%Y-%m-%dT%H:%M:%SZ", current);
+    filter_time(tm_temp, not_before);
+    current->tm_year = current->tm_year + VALIDITY_YEARS;
+    strftime(tm_temp, DATE_SIZE, "%Y-%m-%dT%H:%M:%SZ", current);  
+    filter_time(tm_temp,not_after);
     /*
      * 0. Seed the PRNG
      */
@@ -900,8 +947,7 @@ brski_create_crt(coap_string_t *return_cert, uint8_t *data, size_t len){
                                strlen( pers ) ));
     // Parse serial to MPI
     //
-
-    CHECK(mbedtls_mpi_read_string( &serial, 10, opt_serial ) );
+    CHECK(mbedtls_mpi_read_string( &serial, HEX_RADIX, serial_nb ) );
     /*      
      * 1.0.a. Load the issuer certificates
      */
