@@ -51,6 +51,8 @@
 #include "mbedtls/ssl_cache.h"
 #endif
 
+#define MASA_CLIENT_CA_DER           "./certificates/transport/masa/client_ca.der"
+
 #define RESULT_LEN  130    /* maximum length of htpp result */
 #define HTTP_RESPONSE    "HTTP/1.0 "
 #define HTTP_FOLLOW_CMS  "\r\nContent-Type: application/voucher-cms+json\r\n\r\n"
@@ -139,19 +141,20 @@ cert_verify_callback_mbedtls(void *data UNUSED_PARAM,
                              uint32_t *flags UNUSED_PARAM)
 {
   char *cn = get_san_or_cn_from_cert(crt);
-  if (masa_debug > 0)
-     printf( "CN '%s' presented by client (%s)\n",
-                  cn, depth ? "CA" : "Certificate");
-  if (depth == 0){
-	if (masa_debug > 0)printf(" certificate to be written to %s \n", MASA_CLIENT_DER);
-    char file[] = MASA_CLIENT_DER;
-    coap_string_t contents = {.length = crt->raw.len, .s = NULL};
-    contents.s = malloc(crt->raw.len);
-    memcpy(contents.s, crt->raw.p, crt->raw.len);
-    uint8_t ok = write_file_mem(file, &contents); 
-    free(contents.s); 
-    if (ok != 0)printf( "certificate is not written to %s \n", MASA_CLIENT_DER); 
-  }   
+  char file_cert[]    = MASA_CLIENT_DER;
+  char file_ca[]      = MASA_CLIENT_CA_DER;
+  char *out_file = NULL;
+  if (masa_debug > 0) printf( "CN '%s' presented by client (%s)  ",
+                          cn, depth ? "CA" : "Certificate");
+  if (depth == 0) out_file = file_cert;
+  else            out_file = file_ca;
+  if (masa_debug > 0)printf(" to be written to %s \n", out_file);
+  coap_string_t contents = {.length = crt->raw.len, .s = NULL};
+  contents.s = malloc(crt->raw.len);
+  memcpy(contents.s, crt->raw.p, crt->raw.len);
+  uint8_t ok = write_file_mem(out_file, &contents); 
+  free(contents.s); 
+  if (ok != 0)printf( "certificate is not written to %s \n", out_file); 
   return 0;
 }
 
@@ -172,7 +175,7 @@ int sni_callback( void *p_info, mbedtls_ssl_context *ssl,
 }
 
 
-int
+static int
 min(int a, int b){
 	if (a < b) return a;
 	else return b;
@@ -364,7 +367,7 @@ MS_hnd_post_rv(coap_string_t *signed_voucher_request, uint16_t ct,
   if (ct == COAP_MEDIATYPE_APPLICATION_VOUCHER_COSE_CBOR){
 	  /* cose signed voucher_request  */  
 	  coap_log(LOG_DEBUG,"MS_hnd_post_rv brski_verify_cose_signature invoked with file_name %s,     ca_name  %s\n",file_name, ca_name);
-	  voucher_request = brski_verify_cose_signature(signed_voucher_request, file_name, ca_name);
+	  voucher_request = brski_verify_cose_signature(signed_voucher_request, file_name, NULL);
   } else if (ct == COAP_MEDIATYPE_APPLICATION_VOUCHER_CMS_JSON){
       /* cms signed voucher_request */
       voucher_request = brski_verify_cms_signature(signed_voucher_request, ca_name, file_name);

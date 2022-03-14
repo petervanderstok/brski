@@ -2917,6 +2917,7 @@ brski_verify_cms_signature(coap_string_t *signed_document, char *ca_name, char *
 /* brski_verify_cose_signature
  * verifies the signature of the signed document pointed at by document
  * cert_file_name contains name of the certificate
+ * optional ca_file_name contains CA file that signed cert_file_name
  * returns the contents of signed document
  * ok returns document else returns NULL
  */
@@ -2940,13 +2941,15 @@ brski_verify_cose_signature(coap_string_t *signed_document, char *cert_file_name
     mbedtls_pk_init( key);
     coap_log(LOG_DEBUG,"brksi_verify_cose_signatue parses certificate in %s \n", cert_file_name);
     CHECK(mbedtls_x509_crt_parse_file( &crt, cert_file_name));
-    coap_log(LOG_DEBUG,"brksi_verify_cose_signatue parses ca certificate in %s \n", ca_file_name);
-    CHECK(mbedtls_x509_crt_parse_file( &ca, ca_file_name)); 
-    ok = verify_cert_date( &crt, &ca);
-    if (ok != 0){
+    if (ca_file_name != NULL){
+       coap_log(LOG_DEBUG,"brksi_verify_cose_signatue parses ca certificate in %s \n", ca_file_name);
+       CHECK(mbedtls_x509_crt_parse_file( &ca, ca_file_name)); 
+       ok = verify_cert_date( &crt, &ca);
+       if (ok != 0){
 		coap_log(LOG_ERR,"Certificate %s is not valid \n", cert_file_name);
 		goto exit;
 	}
+    }
     key = &crt.pk;
     mbedtls_ecp_keypair *key_pair = key->pk_ctx;
 /* get public key for eventual debugging */

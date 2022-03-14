@@ -69,6 +69,9 @@
 #define RESULT_LEN  130    /* maximum length of htpp result */
 #define SERVER_PORT "443"  /* default https port */
 
+#define REGIS_CLIENT_CA_DER           "./certificates/transport/registrar/client_ca.der"
+#define REGIS_SERVER_CA_DER           "./certificates/transport/registrar/server_ca.der"
+
 /* counters for statistics  */
 static int srv_cnt = 0;                      /* total number of server invocations */
 static int srv_index_cnt = 0;                /* index invocations */
@@ -279,18 +282,20 @@ cert_verify_callback_mbedtls(void *data UNUSED_PARAM,
                              uint32_t *flags UNUSED_PARAM)
 {
   char *cn = get_san_or_cn_from_cert(crt);
+  char file_cert[]    = REGIS_SERVER_DER;
+  char file_ca[]      = REGIS_SERVER_CA_DER;
+  char *out_file = NULL;  
   coap_log(LOG_INFO, "CN '%s' presented by server (%s)\n",
            cn, depth ? "CA" : "Certificate");
-  if (depth == 0){
-	  coap_log(LOG_INFO, " certificate to be written to %s \n", REGIS_SERVER_DER);
-      char file[] = REGIS_SERVER_DER;
-      coap_string_t contents = {.length = crt->raw.len, .s = NULL};
-      contents.s = malloc(crt->raw.len);
-      memcpy(contents.s, crt->raw.p, crt->raw.len);
-      uint8_t ok = write_file_mem(file, &contents); 
-      free(contents.s); 
-      if (ok != 0)coap_log(LOG_ERR, "certificate is not written to %s \n", REGIS_SERVER_DER); 
-  }   
+  if (depth == 0) out_file = file_cert;
+  else            out_file = file_ca;
+  coap_log(LOG_INFO, " certificate to be written to %s \n", out_file);
+  coap_string_t contents = {.length = crt->raw.len, .s = NULL};
+  contents.s = malloc(crt->raw.len);
+  memcpy(contents.s, crt->raw.p, crt->raw.len);
+  uint8_t ok = write_file_mem(out_file, &contents); 
+  free(contents.s); 
+  if (ok != 0)coap_log(LOG_ERR, "certificate is not written to %s \n", out_file); 
   return 0;
 }
 
@@ -1830,7 +1835,7 @@ RG_hnd_post_rv(coap_context_t *ctx,
   voucher_t *req_contents = NULL;
   if (content_format == COAP_MEDIATYPE_APPLICATION_VOUCHER_COSE_CBOR){
 	  /* signed voucher_request  */
-	  voucher_request = brski_verify_cose_signature(&signed_voucher_request, file_name, ca_name);
+	  voucher_request = brski_verify_cose_signature(&signed_voucher_request, file_name, NULL);
   } else if (content_format == COAP_MEDIATYPE_APPLICATION_VOUCHER_CMS_JSON){
 	  /* signed voucher_request  */
 	  voucher_request = brski_verify_cms_signature(&signed_voucher_request, ca_name, file_name);  
@@ -2333,17 +2338,20 @@ verify_cn_callback(const char *cn,
                    int validated UNUSED_PARAM,
                    void *arg UNUSED_PARAM
 ) {
+    char file_cert[]    = REGIS_CLIENT_DER;
+    char file_ca[]      = REGIS_CLIENT_CA_DER;
+    char *out_file = NULL;
     coap_log(LOG_INFO, "CN '%s' presented by client (%s)\n",
            cn, depth ? "CA" : "Certificate");
-
-	  coap_log(LOG_INFO," certificate to be written to %s \n", REGIS_CLIENT_DER);
-    char file[] = REGIS_CLIENT_DER;
+    if (depth == 0) out_file = file_cert;
+    else            out_file = file_ca;
+    coap_log(LOG_INFO," certificate to be written to %s \n", out_file);
     coap_string_t contents = {.length = asn1_length, .s = NULL};
     contents.s = coap_malloc(asn1_length);
     memcpy(contents.s, asn1_public_cert, asn1_length);
-    uint8_t ok = write_file_mem(file, &contents); 
+    uint8_t ok = write_file_mem(out_file, &contents); 
     coap_free(contents.s); 
-    if (ok != 0)coap_log(LOG_ERR, "certificate is not written to %s \n", REGIS_CLIENT_DER);    
+    if (ok != 0)coap_log(LOG_ERR, "certificate is not written to %s \n", out_file);    
     return 1;
 }
 
