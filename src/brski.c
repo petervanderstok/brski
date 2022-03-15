@@ -1202,8 +1202,8 @@ exit:
 }
 
 static  char sts_version[]   = "version";
-static  char sts_Status[]    = "Status";
-static  char sts_Reason[]    = "Reason";	
+static  char sts_Status[]    = "status";
+static  char sts_Reason[]    = "reason";	
 static  char sts_context[]   = "reason-context";
 static  char log_events[]    = "events";
 static  char log_date[]      = "date";
@@ -1341,7 +1341,7 @@ brski_cbor_voucherstatus(coap_string_t *status){
 	char text[] = "Informative human readable message";
 	char additional[] = "Additional information";
 	uint8_t nr = 0;
-	nr += cbor_put_map(& buf, 4);
+	nr += cbor_put_map(&buf, 4);
 	nr += cbor_put_text(&buf, sts_version, strlen(sts_version));
 	nr += cbor_put_text(&buf, One, strlen(One));
 	nr += cbor_put_text(&buf, sts_Status, strlen(sts_Status));
@@ -1349,6 +1349,8 @@ brski_cbor_voucherstatus(coap_string_t *status){
 	nr += cbor_put_text(&buf, sts_Reason, strlen(sts_Reason));	
 	nr += cbor_put_text(&buf, text, strlen(text));	
 	nr += cbor_put_text(&buf, sts_context, strlen(sts_context));
+	nr += cbor_put_map(&buf, 1);
+	nr += cbor_put_number(&buf, 0);
 	nr += cbor_put_text(&buf, additional, strlen(additional));
 	status->length = nr;
 	status->s = coap_malloc(nr);
@@ -3148,6 +3150,36 @@ brski_json_readstatus(coap_string_t *log, status_t *status){
     return 0;        
 }
 
+int8_t
+read_status_context(uint8_t **data, uint8_t *end_data, status_t *status){
+    int64_t  mm = 0;
+    int8_t ok = 0;
+    uint8_t  *result;
+    size_t   result_len;    
+    uint8_t  elem = cbor_get_next_element(data);
+    if (elem != CBOR_MAP){
+		coap_log(LOG_WARNING,"cbor status context does start with cbor map \n");
+		return 1;
+    }
+    uint64_t map_size = cbor_get_element_size(data);
+    for (uint i=0 ; i < map_size; i++){
+	ok = cbor_get_number(data, &mm);
+	if (ok != 0) goto error;
+	ok = cbor_elem_contained(*data, end_data);
+	if (ok == 1) goto error;
+	ok = cbor_get_string_array(data, &result, &result_len);
+	if (ok == 0){
+		 if (status->additional_text != NULL) coap_free(status->additional_text);
+                 status->additional_text = (char *)result;
+                 status->additional_text_len = result_len;
+	}  /* if ok  */
+	else goto error;
+    }
+    return 0;
+error:
+    coap_log(LOG_WARNING,"cbor status context has illegal format \n");
+    return 1;
+}
 
 /* brski_cbor_readstatus 
  * parses the status of voucher in log sent by pledge 
@@ -3201,20 +3233,16 @@ brski_cbor_readstatus(coap_string_t *log, status_t *status){
               if (ok == 1) goto error;
               ok = cbor_get_string_array(&data, &result, &result_len);
               if (ok == 0){
-				 if( status->reason != NULL) coap_free(status->reason);
-                 status->reason = (char *)result;
-                 status->reason_len = result_len;
-			  }  /* if ok  */
+		 if( status->reason != NULL) coap_free(status->reason);
+	         status->reason = (char *)result;
+	         status->reason_len = result_len;
+	      }  /* if ok  */
               break;
             case STS_CONTEXT:
               ok = cbor_elem_contained(data, end_data);
               if (ok == 1) goto error;
-              ok = cbor_get_string_array(&data, &result, &result_len);
-              if (ok == 0){
-				 if (status->additional_text != NULL) coap_free(status->additional_text);
-                 status->additional_text = (char *)result;
-                 status->additional_text_len = result_len;
-			  }  /* if ok  */
+	      ok = read_status_context(&data, end_data, status);
+	      if (ok != 0) goto error;
               break;
             default:
               return 1;
