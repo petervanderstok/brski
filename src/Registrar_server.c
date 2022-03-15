@@ -210,7 +210,7 @@ handle_sigint(int signum UNUSED_PARAM) {
 }
 
 /* local MASA invocation */
-#define CN_NAME "MASA server"
+#define CN_NAME "masa.honeydukes.sandelman.ca"
 
 /* global coap_start variables */
 #define MAX_USER 128 /* Maximum length of a user name (i.e., PSK
@@ -1171,6 +1171,7 @@ int16_t
 call_http_MASA(coap_string_t *payload, coap_string_t *resource, coap_string_t *host_name, coap_string_t *answer){
 	int ret = 1, len_t;
 	int16_t response_code = 0;
+	int ok = 0;
     mbedtls_net_context server_fd;
     uint32_t flags;
     unsigned char buf[BUFLEN];
@@ -1237,57 +1238,29 @@ call_http_MASA(coap_string_t *payload, coap_string_t *resource, coap_string_t *h
      */
     coap_log(LOG_INFO, "  . Loading the server certificate from %s  to cacert\n", client_file_name );
 
-    ret = mbedtls_x509_crt_parse_file( &cacert, client_file_name );
-    if( ret < 0 )
-    {
-	  coap_log( LOG_ERR, " failed\n  !  mbedtls_x509_crt_parse_file returned -0x%x\n\n", (unsigned int) -ret );
-	  goto exit;
-    }
+    CHECK(mbedtls_x509_crt_parse_file( &cacert, client_file_name ));
     
     coap_log(LOG_INFO, "loading server certificate from %s to cltcert\n", client_file_name);
-    ret = mbedtls_x509_crt_parse_file( &cltcert, client_file_name );
-    if( ret != 0 )
-    {
-	  coap_log( LOG_ERR, "failed\n  !  mbedtls_x509_crt_parse_file returned %d\n\n", ret );
-      goto exit;
-    }
+    CHECK(mbedtls_x509_crt_parse_file( &cltcert, client_file_name ));
+
     coap_log(LOG_INFO, "loading the CA root certificate from %s to ca_cert\n", ca_file_name);
-    ret = mbedtls_x509_crt_parse_file( &cacert, ca_file_name );
-    if( ret != 0 )
-    {
-	  coap_log( LOG_ERR, "failed\n  !  mbedtls_x509_crt_parse_file returned %d\n\n", ret );
-      goto exit;
-    }
-    
+    CHECK(mbedtls_x509_crt_parse_file( &cacert, ca_file_name ));
+
     coap_log(LOG_INFO, "  . Loading the server key file ... name %s ...", key_file_name);
-    ret =  mbedtls_pk_parse_keyfile( &pkey, key_file_name, passwd );
-    if( ret != 0 )
-    {
-        coap_log(LOG_ERR, " failed\n  !  mbedtls_pk_parse_keyfile returned %d\n\n", ret );
-        goto exit;
-    }
+    CHECK(mbedtls_pk_parse_keyfile( &pkey, key_file_name, passwd ));
     /*
      * 1. Start the connection
      */
 
-    if( ( ret = mbedtls_net_connect( &server_fd, (char *)host_name->s,
-                                         (char *)port_name.s, MBEDTLS_NET_PROTO_TCP ) ) != 0 )
-    {
-       coap_log( LOG_ERR, " failed\n  ! mbedtls_net_connect returned %d\n\n", ret );
-       goto exit;
-    }
+    CHECK(mbedtls_net_connect( &server_fd, (char *)host_name->s,
+                                         (char *)port_name.s, MBEDTLS_NET_PROTO_TCP ) );
     /*
      * 2. Setup stuff
      */
-    if( ( ret = mbedtls_ssl_config_defaults( &conf,
+    CHECK(mbedtls_ssl_config_defaults( &conf,
                     MBEDTLS_SSL_IS_CLIENT,
                     MBEDTLS_SSL_TRANSPORT_STREAM,
-                    MBEDTLS_SSL_PRESET_DEFAULT ) ) != 0 )
-    {
-	  coap_log( LOG_ERR, " failed\n  ! mbedtls_ssl_config_defaults returned %d\n\n", ret);
-	  goto exit;
-    }
-
+                    MBEDTLS_SSL_PRESET_DEFAULT ) );
 
     /* OPTIONAL is not optimal for security,
      * but makes but nexessary in Registar <=> MASA exchange */
@@ -1295,12 +1268,7 @@ call_http_MASA(coap_string_t *payload, coap_string_t *resource, coap_string_t *h
     mbedtls_ssl_conf_ca_chain( &conf, &cacert, NULL );
     mbedtls_ssl_conf_verify(&conf,
                           cert_verify_callback_mbedtls, &entry);
-    if( ( ret = mbedtls_ssl_conf_own_cert( &conf, &cacert, &pkey ) ) != 0 )
-        {
-            coap_log(LOG_ERR, " failed\n  ! mbedtls_ssl_conf_own_cert returned %d\n\n",
-                            ret );
-            goto exit;
-        }
+    CHECK(mbedtls_ssl_conf_own_cert( &conf, &cacert, &pkey ) );
     mbedtls_ssl_conf_rng( &conf, mbedtls_ctr_drbg_random, &ctr_drbg );
     mbedtls_ssl_conf_dbg( &conf, my_debug, stdout );
     entry.cacert = &cacert;
@@ -1308,18 +1276,8 @@ call_http_MASA(coap_string_t *payload, coap_string_t *resource, coap_string_t *h
     entry.private_key = &pkey;
     mbedtls_ssl_conf_sni( &conf, sni_callback, &entry );
 
-    if( ( ret = mbedtls_ssl_setup( &ssl, &conf ) ) != 0 )
-    {
-	  coap_log( LOG_ERR, " failed\n  ! mbedtls_ssl_setup returned %d\n\n", ret );
-      goto exit;
-    }
-
-    if( ( ret = mbedtls_ssl_set_hostname( &ssl, CN_NAME ) ) != 0 )
-    {
-      coap_log( LOG_ERR, " failed\n  ! mbedtls_ssl_set_hostname returned %d\n\n", ret );
-      goto exit;
-    }
-
+    CHECK(mbedtls_ssl_setup( &ssl, &conf ) );
+    CHECK(mbedtls_ssl_set_hostname( &ssl, CN_NAME ) );
     mbedtls_ssl_set_bio( &ssl, &server_fd, mbedtls_net_send, mbedtls_net_recv, NULL );
     /*
      * 4. Handshake
@@ -1327,9 +1285,11 @@ call_http_MASA(coap_string_t *payload, coap_string_t *resource, coap_string_t *h
     while( ( ret = mbedtls_ssl_handshake( &ssl ) ) != 0 )
     {
         if( ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE )
-        {
-            coap_log( LOG_ERR, "failed\n  ! mbedtls_ssl_handshake returned -0x%x\n\n", (unsigned int) -ret );
-            goto exit;
+	{
+	   char error_str[100];
+	   mbedtls_strerror( ret, error_str, 100); \
+	   coap_log( LOG_ERR, "failed\n  ! mbedtls_ssl_handhake returned %s\n\n", error_str );
+	   goto exit;
         }
     }
     /*
@@ -1369,9 +1329,11 @@ call_http_MASA(coap_string_t *payload, coap_string_t *resource, coap_string_t *h
     while( ( ret = mbedtls_ssl_write( &ssl, buf, len_t ) ) <= 0 )
     {
         if( ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE )
-        {
-           coap_log( LOG_ERR, "failed\n  ! mbedtls_ssl_write returned %d\n\n", ret );
-           goto exit;
+	{
+	   char error_str[100];
+	   mbedtls_strerror( ret, error_str, 100); \
+	   coap_log( LOG_ERR, "failed\n  ! mbedtls_ssl_write returned %s\n\n", error_str );
+	   goto exit;
         }
     }
     if (len_t == ret)
@@ -1396,8 +1358,10 @@ call_http_MASA(coap_string_t *payload, coap_string_t *resource, coap_string_t *h
             break;
         if( ret < 0 )
         {
-            coap_log( LOG_ERR, "failed\n  ! mbedtls_ssl_read returned %d\n\n", ret );
-            goto exit;
+	   char error_str[100];
+	   mbedtls_strerror( ret, error_str, 100); \
+	   coap_log( LOG_ERR, "failed\n  ! mbedtls_ssl_read returned %s\n\n", error_str );
+	   goto exit;
         }
 
         if( ret == 0 )
@@ -1460,7 +1424,7 @@ call_http_MASA(coap_string_t *payload, coap_string_t *resource, coap_string_t *h
     while( 1 );
     goto okret;
 exit:
-    response_code = 400;  /* no access to http server  */
+    if (ok != 0)response_code = 400;  /* no access to http server  */
 okret:    
     mbedtls_ssl_close_notify( &ssl );
     mbedtls_net_free( &server_fd );
@@ -1483,30 +1447,20 @@ okret:
  */
 int16_t
 call_MASA_ra(status_t *status, coap_string_t *answer, char *file_name){
-	mbedtls_x509_crt pledge_crt;
+    int ok =0;
+    mbedtls_x509_crt pledge_crt;
     mbedtls_x509_crt_init( &pledge_crt);
-#define CRT_BUF_SIZE            1024    
-    char err_buf[CRT_BUF_SIZE]; 
-    int ret = 1;
-    if( ( ret = mbedtls_x509_crt_parse_file( &pledge_crt, file_name ) ) != 0 )
-    {
-       mbedtls_strerror( ret, err_buf, sizeof(err_buf) );
-       coap_log( LOG_ERR, " failed\n  !  mbedtls_x509_crt_parse_file %s: "
-                            "returned -0x%04x - %s\n\n", file_name, (unsigned int) -ret, err_buf );
-       mbedtls_x509_crt_free(&pledge_crt);                    
-       return 400;
-     }
-     coap_string_t MASA_url = { .s = NULL, .length = 0};
-     int16_t ok = return_MASAurl( &pledge_crt.v3_ext, &MASA_url);
-     
-	if (ok != 0){ 
+    CHECK(mbedtls_x509_crt_parse_file( &pledge_crt, file_name ) );
+    coap_string_t MASA_url = { .s = NULL, .length = 0};
+    ok = return_MASAurl( &pledge_crt.v3_ext, &MASA_url);
+    if (ok != 0){ 
 	  coap_log(LOG_ERR, "no MASAurlextension found \n");
-	  return 400;
+	  goto exit;
     }
     if (status->json_cbor != JSON_set()){
 		coap_log(LOG_ERR, "stored status uses different cbor/json format \n");
-		return 400;
-	}
+		goto exit;
+    }
     coap_string_t payload = { .length = status->rv_len, .s = status->request_voucher};
     size_t resource_size = sizeof(POST_REQUEST_RA) + sizeof(HOST) + MASA_url.length + sizeof(ACCEPT_COSE_CBOR) + 
                                   sizeof(COSE_CBOR) + sizeof(CONTENT_LENGTH)+ sizeof(STARTPL) + 10; /* leaves few bytes for length  */                         
@@ -1540,11 +1494,14 @@ call_MASA_ra(status_t *status, coap_string_t *answer, char *file_name){
     resource.length = offset;  
     if (offset < resource_size)     
 	       ok = call_http_MASA(&payload, &resource, &MASA_url, answer);
-	else ok = 400;
+    else ok = 400;
     mbedtls_x509_crt_free(&pledge_crt);    	
-	if (MASA_url.s != NULL)coap_free(MASA_url.s);
-	if (resource.s != NULL)coap_free(resource.s);
+    if (MASA_url.s != NULL)coap_free(MASA_url.s);
+    if (resource.s != NULL)coap_free(resource.s);
     return ok;
+exit:
+    mbedtls_x509_crt_free(&pledge_crt);                    
+    return 400;
 }
 
 /*
@@ -1556,24 +1513,14 @@ call_MASA_ra(status_t *status, coap_string_t *answer, char *file_name){
  call_MASA_rv(coap_string_t *masa_request, coap_string_t *masa_voucher, char * file_name){
 	mbedtls_x509_crt pledge_crt;
     mbedtls_x509_crt_init( &pledge_crt);
-#define CRT_BUF_SIZE            1024    
-    char err_buf[CRT_BUF_SIZE]; 
-    int ret = 1;
+    int ok = 0;
     coap_log(LOG_INFO, "call_MASA_rv pledge file name is %s \n", file_name);
-    if( ( ret = mbedtls_x509_crt_parse_file( &pledge_crt, file_name ) ) != 0 )
-    {
-       mbedtls_strerror( ret, err_buf, sizeof(err_buf) );
-       coap_log( LOG_ERR, " failed\n  !  mbedtls_x509_crt_parse_file %s: "
-                            "returned -0x%04x - %s\n\n", file_name, (unsigned int) -ret, err_buf );
-       mbedtls_x509_crt_free(&pledge_crt);                    
-       return 400;
-     }
-     coap_string_t MASA_url = { .s = NULL, .length = 0};
-     int16_t ok = return_MASAurl( &pledge_crt.v3_ext, &MASA_url);
-     if (ok != 0){ 
+    CHECK(mbedtls_x509_crt_parse_file( &pledge_crt, file_name ) );
+    coap_string_t MASA_url = { .s = NULL, .length = 0};
+    ok = return_MASAurl( &pledge_crt.v3_ext, &MASA_url);
+    if (ok != 0){ 
 	    coap_log(LOG_ERR, "no MASAurlextension found \n");
-        mbedtls_x509_crt_free(&pledge_crt);   	    
-	    return 400;
+            goto exit;
      }
     size_t resource_size = sizeof(POST_REQUEST_RV) + sizeof(HOST) + MASA_url.length + sizeof(ACCEPT_COSE_CBOR) + 
                                   sizeof(COSE_CBOR) + sizeof(CONTENT_LENGTH) + sizeof(STARTPL)+ 10; /* leaves few bytes for length  */
@@ -1608,12 +1555,15 @@ call_MASA_ra(status_t *status, coap_string_t *answer, char *file_name){
     resource.length = offset; 
     if (offset < resource_size){     
 	       ok = call_http_MASA(masa_request, &resource, &MASA_url, masa_voucher);
-	}
-	else ok = 400;	 	
-	if (MASA_url.s != NULL)coap_free(MASA_url.s);
-	if (resource.s != NULL)coap_free(resource.s); 
-	mbedtls_x509_crt_free(&pledge_crt);  	 
+    }
+    else ok = 400;	 	
+    if (MASA_url.s != NULL)coap_free(MASA_url.s);
+    if (resource.s != NULL)coap_free(resource.s); 
+    mbedtls_x509_crt_free(&pledge_crt);  	 
     return ok;
+exit:
+    mbedtls_x509_crt_free(&pledge_crt);                    
+    return 400;
 } 
 
 /* SERVER HANDLING routines  */
