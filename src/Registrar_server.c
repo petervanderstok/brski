@@ -209,9 +209,6 @@ handle_sigint(int signum UNUSED_PARAM) {
   quit = 1;
 }
 
-/* local MASA invocation */
-#define CN_NAME "masa.honeydukes.sandelman.ca"
-
 /* global coap_start variables */
 #define MAX_USER 128 /* Maximum length of a user name (i.e., PSK
                       * identity) in bytes. */
@@ -1135,7 +1132,7 @@ create_port(coap_string_t *host_name, coap_string_t *port_name){
 	}
 }
 
-#define DEBUG_LEVEL 0
+#define DEBUG_LEVEL 5
 
 static void my_debug( void *ctx, int level,
                       const char *file, int line,
@@ -1277,7 +1274,7 @@ call_http_MASA(coap_string_t *payload, coap_string_t *resource, coap_string_t *h
     mbedtls_ssl_conf_sni( &conf, sni_callback, &entry );
 
     CHECK(mbedtls_ssl_setup( &ssl, &conf ) );
-    CHECK(mbedtls_ssl_set_hostname( &ssl, CN_NAME ) );
+    CHECK(mbedtls_ssl_set_hostname( &ssl, (char *)host_name->s ) );
     mbedtls_ssl_set_bio( &ssl, &server_fd, mbedtls_net_send, mbedtls_net_recv, NULL );
     /*
      * 4. Handshake
