@@ -809,7 +809,7 @@ message_handler(struct coap_context_t *ctx,
           coap_log(LOG_DEBUG, "upload ready\n");
           if (coap_get_data(received, &len, &databuf)){
               cur_resp_handler(databuf, len, received->code, block.num, COAP_OPT_BLOCK_MORE(block_opt));
-		  }
+		  } else cur_resp_handler( NULL, 0, received->code, block.num, COAP_OPT_BLOCK_MORE(block_opt));
           make_ready();
           return;
         }
@@ -876,7 +876,7 @@ message_handler(struct coap_context_t *ctx,
         /* There is no block option set, just read the data and we are done. */
         if (coap_get_data(received, &len, &databuf)){
           cur_resp_handler( databuf, len, received->code, 0, 0);
-        }
+        } else cur_resp_handler( NULL, 0, received->code, 0, 0);
       }
     }
   } else {      /* no 2.05 */
@@ -1488,15 +1488,6 @@ coap_start_session(client_request_t *client){
 
   return client->session;
 } 
- 
- /* 
-int8_t
-coap_jp_send(uint8_t * data, size_t size){
-	coap_session_send(client->session, data, size);
-	return 0;
-}
-* */
-
 
 int8_t
 coap_start_request(client_request_t *client, uint16_t ct){

@@ -148,7 +148,7 @@ static coap_string_t registrar_audit = {
 /* stores audit returned by /brski/vs */
 static int16_t
 add_audit(unsigned char *data, size_t len, uint16_t code, 
-                      uint16_t block_num, uint16_t more) {
+                      uint16_t block_num, uint16_t more) {			  
   if (code >> 5 != 2){
     if (registrar_audit.s != NULL)coap_free(registrar_audit.s);
     registrar_audit.length = 0;
@@ -1696,7 +1696,7 @@ const char *state_names[] = { "START", "DISCOVERED", "CONNECTED", "RV_DONE", "VS
 		     ok = pledge_arrived(audit_code, &registrar_audit);
 		   	 if (ok == 0){
 				 ok = pledge_get_certificate( client);
-			 }
+			 } else if (audit_code>>5 == 2)ok = pledge_get_certificate( client); // empty audit is possible
 		   	 break;		       
 		   case CERTIFIED:
 		     ok = pledge_arrived(cert_code, &registrar_cert);

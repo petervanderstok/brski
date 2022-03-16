@@ -1,26 +1,28 @@
-/* switch-server -- implementation of ocf Switch using
- * a simple implementation of the Constrained Application Protocol (CoAP)
+/* Pledge with Join_proxy -server -- implementation of 
+ * the Constrained Application Protocol (CoAP) server interface
  *         as defined in RFC 7252
- * OCF switch (SW) server is added by:
  * Peter van der Stok <consultancy@vanderstok.org>
- * This file relies on oscore
+ * file includes coap server.c and imports coap_server.h
+ * file initializes the Join_proxy server functions 
+ * This file relies on mbedtls DTLS
  *
-
+ * Copyright (C) 2010--2018 Olaf Bergmann <bergmann@tzi.org> and others
+ *
  * This file is part of the CoAP library libcoap. Please see README for terms
  * of use.
  *
- * authorization for access are created by authz-info
  */
+
 
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <ctype.h>
 #include <sys/types.h>
-#include <ifaddrs.h>
 #include <sys/stat.h>
 #include <errno.h>
 #include <signal.h>
+#include <ifaddrs.h>
 #ifdef _WIN32
 #define strcasecmp _stricmp
 #include "getopt.c"
@@ -38,14 +40,32 @@
 #include <time.h>
 #endif
 
-#include "switch_server.h"
-#include "oscore_oauth.h"
-#include "coap_server.h"
-#include "oscore.h"
-#include "oscore-context.h"
+#include <mbedtls/error.h>
+#include <mbedtls/x509_crt.h>
+#include <mbedtls/asn1.h>
+#include <mbedtls/pem.h>
 #include "cbor.h"
 #include "cose.h"
+
 #include "coap.h"
+#include "coap_server.h"
+#include "brski.h"
+#include "client_request.h"
+#include "sv_cl_util.h"
+#include "home_server.h"
+
+#ifndef WITHOUT_ASYNC
+/* This variable is used to mimic long-running tasks that require
+ * asynchronous responses. */
+static coap_async_state_t *async = NULL;
+
+/* A typedef for transfering a value in a void pointer */
+typedef union {
+  unsigned int val;
+  void *ptr;
+} async_data_t;
+#endif /* WITHOUT_ASYNC */
+
 
 #ifdef __GNUC__
 #define UNUSED_PARAM __attribute__ ((unused))
@@ -53,17 +73,55 @@
 #define UNUSED_PARAM
 #endif /* GCC */
 
-#define BOOT_KEY    1
-#define BOOT_NAME   2
+#define COAP_PING        0  /* specified 0 command */
 
-/* reference to AS; to be returned when no oscore encryption */
-static uint8_t *IP_AS = NULL;
-static size_t  IP_AS_len = 0;
+#define FLAGS_BLOCK            0x01
+#define CREATE_URI_OPTS        1
+#define RELIABLE               0
 
-/* name and IP address of switch to be used in AS */
-static coap_string_t IP_SW = {.length =0, .s = NULL};
-static coap_string_t SW_identifier = {.length =0, .s = NULL};
+#define OID_SERIAL_NUMBER    5
 
+#define PLEDGE_SERVER_CA_DER    "./certificates/transport/pledge/server_ca.der"
+#define PLEDGE_ENROLL_COMB      "./certificates/brski/intermediate/certs/pledge_enroll_comb.crt"
+
+#define CHECK( x )                                                      \
+    do {                                                                \
+        int CHECK__ret_ = ( x );                                        \
+        if( CHECK__ret_ < 0 )                                          \
+        {                                                               \
+            char CHECK__error_[100];                                    \
+            mbedtls_strerror( CHECK__ret_,                              \
+                              CHECK__error_, sizeof( CHECK__error_ ) ); \
+            coap_log(LOG_ERR, "%s -> %s\n", #x, CHECK__error_ );        \
+            ok = 1;                                                     \
+            goto exit;                                                  \
+        }                                                               \
+    } while( 0 )
+
+#define CLIENT_ACTIVE   0
+#define CLIENT_INACTIVE 1
+
+/* START global data with life-time of client process */
+int client_active = CLIENT_ACTIVE;
+int quit = 0; /* used to terminate process */
+
+/* changeable clock base (see handle_put_time()) */
+time_t clock_offset;
+time_t my_clock_base;
+struct coap_resource_t *time_resource;
+int resource_flags;
+
+/* temporary storage for dynamic resource representations */
+int support_dynamic;           
+int dynamic_count = 0;
+dynamic_resource_t *dynamic_entry = NULL;
+
+/* END global data with life-time of client process */
+
+/* START global data with life_time of one request-response to server */
+
+coap_block_t block = { .num = 0, .m = 0, .szx = 6 };
+uint16_t last_block1_tid = 0;
 
 /* local IP adresses  contained in "ocf_eps" */
 typedef struct ocf_ep_t{
@@ -74,40 +132,670 @@ typedef struct ocf_ep_t{
 static struct ocf_ep_t  *ocf_eps = NULL;
 static size_t ocf_ep_nr = 0;
 
+static uint8_t switch_value = 0;   /* value of switch */
+/* IP address of switch to be used for registration */
+static coap_string_t IP_SW = {.length =0, .s = NULL};
 
-/* shared key between AS and Switch */
-static uint8_t *ASSW_KEY = NULL;
-// static size_t  ASSW_KEY_LEN = 0;
-static uint8_t *ASSW_key_id = NULL;
-static size_t  ASSW_key_id_len = 0; 
-// static uint8_t ASSW_IV[COSE_algorithm_AES_CCM_16_64_128_IV_LEN];
+/* certificates and key files for sever DTLS */
+static char int_cert_file[] = PLEDGE_COMB;         /* Combined certificate and private key in PEM */
+static char int_ca_file[] = PLEDGE_CA  ;           /* CA for cert_file - for cert checking in PEM */
+char *cert_file = int_cert_file;                   /* Combined certificate and private key in PEM */
+char *ca_file = int_ca_file;                       /* CA for cert_file - for cert checking in PEM */
+char *root_ca_file = NULL;                         /* List of trusted Root CAs in PEM */
 
-/* rsnonce generated by server and combined with cnonce of join */
-static uint8_t *rsnonce = NULL;
+/* discover Registrar or join proxy  */
 
-static uint8_t switch_value = 0;
+char regis_discover[]      = "rt=ace.est.rv";        /* discover registrar for direct enrollemnt */
+char regis_port_discover[] = "rt="REGISTRAR_RT;      /* discover registrar port for join_proxy */
+char join_proxy_discover[] = "rt="JOIN_PROXY_RT;       /* discover join proxy port */
+char *discover_rt          = regis_discover;         /* rt used for discovery (default is Registrar) */
+char *discover_choice      = regis_discover;         /* rt chosen with -R option    */
 
-/* stores data for block2 return */
-coap_string_t SW_ret_data = {
+#ifndef min
+#define min(a,b) ((a) < (b) ? (a) : (b))
+#endif
+
+/* SIGINT handler: set quit to 1 for graceful termination */
+void
+handle_sigint(int signum UNUSED_PARAM) {
+  quit = 1;
+}
+
+static uint16_t cert_code = 0;
+static coap_string_t registrar_cert = {
 	.length = 0,
 	.s = NULL
 };
 
+static uint16_t masa_code = 0;
+static coap_string_t masa_voucher = {
+	.length = 0,
+	.s = NULL
+};
 
+static uint16_t audit_code = 0;
+static coap_string_t registrar_audit = {
+	.length = 0,
+	.s = NULL
+};
 
-/* cr_namenr(uint8_t *result)
- * creates identifier of 6 ciphers for unique name
- */
-static void
-cr_namenr(uint8_t * result){
-   uint32_t numb=rand();
-   for (uint8_t qq=0; qq < 6; qq++){
-     uint32_t numb10 = numb/10;
-     result[qq] = numb -10*numb10 +0x30;
-     numb = numb10;
-   }
+/* stores audit returned by /brski/vs */
+static int16_t
+add_audit(unsigned char *data, size_t len, uint16_t code, 
+                      uint16_t block_num, uint16_t more) {
+  if (code >> 5 != 2){
+    if (registrar_audit.s != NULL)coap_free(registrar_audit.s);
+    registrar_audit.length = 0;
+    registrar_audit.s = NULL;
+    audit_code = code;
+    return 0;
+  }
+  if (block_num == 0){   /* newly arrived message */
+	if (registrar_audit.s != NULL)coap_free(registrar_audit.s);
+    registrar_audit.length = 0;
+    registrar_audit.s = NULL;
+  }
+  size_t offset = registrar_audit.length;
+      /* Add in new block to end of current data */
+  coap_string_t old_mess = {.length = registrar_audit.length, .s = registrar_audit.s};
+  registrar_audit.length = offset + len;
+  registrar_audit.s = coap_malloc(offset+len);
+  if (offset != 0) 
+     memcpy (registrar_audit.s, old_mess.s, offset);  /* copy old contents  */
+  if (old_mess.s != NULL)coap_free(old_mess.s);
+  memcpy(registrar_audit.s + offset, data, len);         /* add new contents  */
+  audit_code = code;
+  return 0;
 }
 
+/* stores masa voucher returned by /brski/rv */
+static int16_t
+add_voucher(unsigned char *data, size_t len, uint16_t code, 
+                            uint16_t block_num, uint16_t more) {
+    if (code >> 5 != 2){
+    if (masa_voucher.s != NULL)coap_free(masa_voucher.s);
+    masa_voucher.length = 0;
+    masa_voucher.s = NULL;
+    masa_code = code;
+    return 0;
+  }
+  if (block_num == 0){   /* newly arrived message */
+	if (masa_voucher.s != NULL)coap_free(masa_voucher.s);
+    masa_voucher.length = 0;
+    masa_voucher.s = NULL;
+  }
+  size_t offset = masa_voucher.length;
+      /* Add in new block to end of current data */
+  coap_string_t old_mess = {.length = masa_voucher.length, .s = masa_voucher.s};
+  masa_voucher.length = offset + len;
+  masa_voucher.s = coap_malloc(offset+len);
+  if (offset != 0) 
+     memcpy (masa_voucher.s, old_mess.s, offset);  /* copy old contents  */
+  if (old_mess.s != NULL)coap_free(old_mess.s);
+  memcpy(masa_voucher.s + offset, data, len);         /* add new contents  */ 
+  masa_code = code;
+  return 0;
+}
+
+/* stores registrar certificate returned by /est/crts */
+static int16_t
+add_certificate(unsigned char *data, size_t len, uint16_t code, 
+                          uint16_t block_num, uint16_t more){
+  if (code >> 5 != 2){
+    if (registrar_cert.s != NULL)coap_free(registrar_cert.s);
+    registrar_cert.length = 0;
+    registrar_cert.s = NULL;
+    cert_code = code;
+    return 0;
+  }
+  if (block_num == 0){   /* newly arrived message */
+	if (registrar_cert.s != NULL)coap_free(registrar_cert.s);
+    registrar_cert.length = 0;
+    registrar_cert.s = NULL;
+  }
+  size_t offset = registrar_cert.length;
+      /* Add in new block to end of current data */
+  coap_string_t old_mess = {.length = registrar_cert.length, .s = registrar_cert.s};
+  registrar_cert.length = offset + len;
+  registrar_cert.s = coap_malloc(offset+len);
+  if (offset != 0) 
+     memcpy (registrar_cert.s, old_mess.s, offset);  /* copy old contents  */
+  if (old_mess.s != NULL)coap_free(old_mess.s);
+  memcpy(registrar_cert.s + offset, data, len);         /* add new contents  */
+  cert_code = code;
+  return 0;
+}
+
+/* pledge_arrived
+ * returns 0 when code < 300 and arrived->s != null
+ * else returns 1
+ */
+uint8_t
+pledge_arrived(uint16_t code, coap_string_t *arrived){
+	if (arrived == NULL) return 1;
+	if ((code >> 5 == 2) && arrived->s != NULL)return 0;
+	if (arrived->s != NULL)coap_log(LOG_ERR," Returned error %d.%d: %s \n",code>>5, code & 0x1f, arrived->s);
+	else coap_log(LOG_ERR," Returned error %d.%02d \n",code>>5, code & 0x1f); 
+	return 1;
+}
+
+static void
+hnd_get_index(coap_context_t *ctx UNUSED_PARAM,
+              struct coap_resource_t *resource,
+              coap_session_t *session,
+              coap_pdu_t *request,
+              coap_binary_t *token,
+              coap_string_t *query UNUSED_PARAM,
+              coap_pdu_t *response) {
+
+  coap_add_data_blocked_response(resource, session, request, response, token,
+                                 COAP_MEDIATYPE_TEXT_PLAIN, 0x2ffff,
+                                 strlen(INDEX),
+                                 (const uint8_t *)INDEX);
+}
+
+static void
+hnd_get_time(coap_context_t  *ctx,
+             struct coap_resource_t *resource,
+             coap_session_t *session,
+             coap_pdu_t *request,
+             coap_binary_t *token,
+             coap_string_t *query,
+             coap_pdu_t *response) {
+  unsigned char buf[40];
+  size_t len;
+  time_t now;
+  coap_tick_t t;
+  (void)request;
+
+  /* FIXME: return time, e.g. in human-readable by default and ticks
+   * when query ?ticks is given. */
+
+  if (my_clock_base) {
+
+    /* calculate current time */
+    coap_ticks(&t);
+    now = my_clock_base + (t / COAP_TICKS_PER_SECOND);
+
+    if (query != NULL
+        && coap_string_equal(query, coap_make_str_const("ticks"))) {
+          /* output ticks */
+          len = snprintf((char *)buf, sizeof(buf), "%u", (unsigned int)now);
+
+    } else {      /* output human-readable time */
+      struct tm *tmp;
+      tmp = gmtime(&now);
+      if (!tmp) {
+        /* If 'now' is not valid */
+        response->code = COAP_RESPONSE_CODE(404);
+        return;
+      }
+      else {
+        len = strftime((char *)buf, sizeof(buf), "%b %d %H:%M:%S", tmp);
+      }
+    }
+    coap_add_data_blocked_response(resource, session, request, response, token,
+                                   COAP_MEDIATYPE_TEXT_PLAIN, 1,
+                                   len,
+                                   buf);
+  }
+  else {
+    /* if my_clock_base was deleted, we pretend to have no such resource */
+    response->code = COAP_RESPONSE_CODE(404);
+  }
+}
+
+static void
+hnd_put_time(coap_context_t *ctx UNUSED_PARAM,
+             struct coap_resource_t *resource,
+             coap_session_t *session UNUSED_PARAM,
+             coap_pdu_t *request,
+             coap_binary_t *token UNUSED_PARAM,
+             coap_string_t *query UNUSED_PARAM,
+             coap_pdu_t *response) {
+  coap_tick_t t;
+  size_t size;
+  unsigned char *data;
+
+  /* FIXME: re-set my_clock_base to clock_offset if my_clock_base == 0
+   * and request is empty. When not empty, set to value in request payload
+   * (insist on query ?ticks). Return Created or Ok.
+   */
+
+  /* if my_clock_base was deleted, we pretend to have no such resource */
+  response->code =
+    my_clock_base ? COAP_RESPONSE_CODE(204) : COAP_RESPONSE_CODE(201);
+
+  coap_resource_notify_observers(resource, NULL);
+
+  /* coap_get_data() sets size to 0 on error */
+  (void)coap_get_data(request, &size, &data);
+
+  if (size == 0)        /* re-init */
+    my_clock_base = clock_offset;
+  else {
+    my_clock_base = 0;
+    coap_ticks(&t);
+    while(size--)
+      my_clock_base = my_clock_base * 10 + *data++;
+    my_clock_base -= t / COAP_TICKS_PER_SECOND;
+
+    /* Sanity check input value */
+    if (!gmtime(&my_clock_base)) {
+      unsigned char buf[3];
+      response->code = COAP_RESPONSE_CODE(400);
+      coap_add_option(response,
+                      COAP_OPTION_CONTENT_FORMAT,
+                      coap_encode_var_safe(buf, sizeof(buf),
+                      COAP_MEDIATYPE_TEXT_PLAIN), buf);
+      coap_add_data(response, 22, (const uint8_t*)"Invalid set time value");
+      /* re-init as value is bad */
+      my_clock_base = clock_offset;
+    }
+  }
+}
+
+static void
+hnd_delete_time(coap_context_t *ctx UNUSED_PARAM,
+                struct coap_resource_t *resource UNUSED_PARAM,
+                coap_session_t *session UNUSED_PARAM,
+                coap_pdu_t *request UNUSED_PARAM,
+                coap_binary_t *token UNUSED_PARAM,
+                coap_string_t *query UNUSED_PARAM,
+                coap_pdu_t *response UNUSED_PARAM) {
+  my_clock_base = 0;    /* mark clock as "deleted" */
+
+  /* type = request->hdr->type == COAP_MESSAGE_CON  */
+  /*   ? COAP_MESSAGE_ACK : COAP_MESSAGE_NON; */
+}
+
+#ifndef WITHOUT_ASYNC
+static void
+hnd_get_async(coap_context_t *ctx,
+              struct coap_resource_t *resource UNUSED_PARAM,
+              coap_session_t *session,
+              coap_pdu_t *request,
+              coap_binary_t *token UNUSED_PARAM,
+              coap_string_t *query UNUSED_PARAM,
+              coap_pdu_t *response) {
+  unsigned long delay = 5;
+  size_t size;
+
+  if (async) {
+    if (async->id != request->tid) {
+      coap_opt_filter_t f;
+      coap_option_filter_clear(f);
+      response->code = COAP_RESPONSE_CODE(503);
+    }
+    return;
+  }
+
+  if (query) {
+    const uint8_t *p = query->s;
+
+    delay = 0;
+    for (size = query->length; size; --size, ++p)
+      delay = delay * 10 + (*p - '0');
+  }
+
+  /*
+   * This is so we can use a local variable to hold the remaining time.
+   * The alternative is to malloc the variable and set COAP_ASYNC_RELEASE_DATA
+   * in the flags parameter in the call to coap_register_async() and handle
+   * the required time as appropriate in check_async() below.
+   */
+  async_data_t data;
+  data.val = COAP_TICKS_PER_SECOND * delay;
+  async = coap_register_async(ctx,
+                              session,
+                              request,
+                              COAP_ASYNC_SEPARATE | COAP_ASYNC_CONFIRM,
+                              data.ptr);
+}
+
+static void
+check_async(coap_context_t *ctx,
+            coap_tick_t now) {
+  coap_pdu_t *response;
+  coap_async_state_t *tmp;
+  async_data_t data;
+
+  size_t size = 13;
+
+  if (!async)
+    return;
+
+  data.ptr = async->appdata;
+  if (now < async->created + data.val)
+    return;
+
+  response = coap_pdu_init(async->flags & COAP_ASYNC_CONFIRM
+             ? COAP_MESSAGE_CON
+             : COAP_MESSAGE_NON,
+             COAP_RESPONSE_CODE(205), 0, size);
+  if (!response) {
+    coap_log(LOG_DEBUG, "check_async: insufficient memory, we'll try later\n");
+    data.val = data.val + 15 * COAP_TICKS_PER_SECOND;
+    async->appdata = data.ptr;
+    return;
+  }
+
+  response->tid = coap_new_message_id(async->session);
+
+  if (async->tokenlen)
+    coap_add_token(response, async->tokenlen, async->token);
+
+  coap_add_data(response, 4, (const uint8_t *)"done");
+
+  if (coap_send(async->session, response) == COAP_INVALID_TID) {
+    coap_log(LOG_DEBUG, "check_async: cannot send response for message\n");
+  }
+  coap_remove_async(ctx, async->session, async->id, &tmp);
+  coap_free_async(async);
+  async = NULL;
+}
+#endif /* WITHOUT_ASYNC */
+
+/*
+ * Regular DELETE handler - used by resources created by the
+ * Unknown Resource PUT handler
+ */
+
+static void
+hnd_delete(coap_context_t *ctx,
+           coap_resource_t *resource,
+           coap_session_t *session UNUSED_PARAM,
+           coap_pdu_t *request UNUSED_PARAM,
+           coap_binary_t *token UNUSED_PARAM,
+           coap_string_t *query UNUSED_PARAM,
+           coap_pdu_t *response UNUSED_PARAM
+) {
+  int i;
+  coap_string_t *uri_path;
+
+  /* get the uri_path */
+  uri_path = coap_get_uri_path(request);
+  if (!uri_path) {
+    response->code = COAP_RESPONSE_CODE(404);
+    return;
+  }
+
+  for (i = 0; i < dynamic_count; i++) {
+    if (coap_string_equal(uri_path, dynamic_entry[i].uri_path)) {
+      /* Dynamic entry no longer required - delete it */
+      coap_delete_string(dynamic_entry[i].value);
+      if (dynamic_count-i > 1) {
+         memmove (&dynamic_entry[i],
+                  &dynamic_entry[i+1],
+                 (dynamic_count-i-1) * sizeof (dynamic_entry[0]));
+      }
+      dynamic_count--;
+      break;
+    }
+  }
+
+  /* Dynamic resource no longer required - delete it */
+  coap_delete_resource(ctx, resource);
+  response->code = COAP_RESPONSE_CODE(202);
+  return;
+}
+
+/*
+ * Regular GET handler - used by resources created by the
+ * Unknown Resource PUT handler
+ */
+
+static void
+hnd_get(coap_context_t *ctx UNUSED_PARAM,
+        coap_resource_t *resource,
+        coap_session_t *session,
+        coap_pdu_t *request,
+        coap_binary_t *token,
+        coap_string_t *query UNUSED_PARAM,
+        coap_pdu_t *response
+) {
+  coap_str_const_t *uri_path;
+  int i;
+  dynamic_resource_t *resource_entry = NULL;
+  coap_str_const_t value = { 0, NULL };
+  /*
+   * request will be NULL if an Observe triggered request, so the uri_path,
+   * if needed, must be abstracted from the resource.
+   * The uri_path string is a const pointer
+   */
+
+  uri_path = coap_resource_get_uri_path(resource);
+  if (!uri_path) {
+    response->code = COAP_RESPONSE_CODE(404);
+    return;
+  }
+
+  for (i = 0; i < dynamic_count; i++) {
+    if (coap_string_equal(uri_path, dynamic_entry[i].uri_path)) {
+      break;
+    }
+  }
+  if (i == dynamic_count) {
+    response->code = COAP_RESPONSE_CODE(404);
+    return;
+  }
+
+  resource_entry = &dynamic_entry[i];
+
+  if (resource_entry->value) {
+    value.length = resource_entry->value->length;
+    value.s = resource_entry->value->s;
+  }
+  coap_add_data_blocked_response(resource, session, request, response, token,
+                                 resource_entry->media_type, -1,
+                                 value.length,
+                                 value.s);
+  return;
+}
+
+/*
+ * Regular PUT handler - used by resources created by the
+ * Unknown Resource PUT handler
+ */
+
+static void
+hnd_put(coap_context_t *ctx UNUSED_PARAM,
+        coap_resource_t *resource,
+        coap_session_t *session UNUSED_PARAM,
+        coap_pdu_t *request,
+        coap_binary_t *token UNUSED_PARAM,
+        coap_string_t *query UNUSED_PARAM,
+        coap_pdu_t *response
+) {
+  coap_string_t *uri_path;
+  int i;
+  size_t size;
+  uint8_t *data;
+  coap_block_t block1;
+  dynamic_resource_t *resource_entry = NULL;
+  unsigned char buf[6];      /* space to hold encoded/decoded uints */
+  coap_opt_iterator_t opt_iter;
+  coap_opt_t *option;
+
+  /* get the uri_path */
+  uri_path = coap_get_uri_path(request);
+  if (!uri_path) {
+    response->code = COAP_RESPONSE_CODE(404);
+    return;
+  }
+
+  /*
+   * Locate the correct dynamic block for this request
+   */
+  for (i = 0; i < dynamic_count; i++) {
+    if (coap_string_equal(uri_path, dynamic_entry[i].uri_path)) {
+      break;
+    }
+  }
+  if (i == dynamic_count) {
+    if (dynamic_count >= support_dynamic) {
+      /* Should have been caught in hnd_unknown_put() */
+      response->code = COAP_RESPONSE_CODE(406);
+      coap_delete_string(uri_path);
+      return;
+    }
+    dynamic_count++;
+    dynamic_entry = realloc (dynamic_entry, dynamic_count * sizeof(dynamic_entry[0]));
+    if (dynamic_entry) {
+      dynamic_entry[i].uri_path = uri_path;
+      dynamic_entry[i].value = NULL;
+      dynamic_entry[i].resource = resource;
+      dynamic_entry[i].created = 1;
+      response->code = COAP_RESPONSE_CODE(201);
+      if ((option = coap_check_option(request, COAP_OPTION_CONTENT_TYPE, &opt_iter)) != NULL) {
+        dynamic_entry[i].media_type =
+            coap_decode_var_bytes (coap_opt_value (option), coap_opt_length (option));
+      }
+      else {
+        dynamic_entry[i].media_type = COAP_MEDIATYPE_TEXT_PLAIN;
+      }
+      /* Store media type of new resource in ct. We can use buf here
+       * as coap_add_attr() will copy the passed string. */
+      memset(buf, 0, sizeof(buf));
+      snprintf((char *)buf, sizeof(buf), "%d", dynamic_entry[i].media_type);
+      /* ensure that buf is always zero-terminated */
+      assert(buf[sizeof(buf) - 1] == '\0');
+      buf[sizeof(buf) - 1] = '\0';
+      coap_add_attr(resource,
+                    coap_make_str_const("ct"),
+                    coap_make_str_const((char*)buf),
+                    0);
+    } else {
+      dynamic_count--;
+      response->code = COAP_RESPONSE_CODE(500);
+      return;
+    }
+  } else {
+    /* Need to do this as coap_get_uri_path() created it */
+    coap_delete_string(uri_path);
+    response->code = COAP_RESPONSE_CODE(204);
+    dynamic_entry[i].created = 0;
+    coap_resource_notify_observers(dynamic_entry[i].resource, NULL);
+  }
+
+  resource_entry = &dynamic_entry[i];
+
+  if (coap_get_block(request, COAP_OPTION_BLOCK1, &block1)) {
+    /* handle BLOCK1 */
+    if (coap_get_data(request, &size, &data) && (size > 0)) {
+      size_t offset = block1.num << (block1.szx + 4);
+      coap_string_t *value = resource_entry->value;
+      if (offset == 0) {
+        if (value) {
+          coap_delete_string(value);
+          value = NULL;
+        }
+      }
+      else if (offset >
+            (resource_entry->value ? resource_entry->value->length : 0)) {
+        /* Upload is not sequential - block missing */
+        response->code = COAP_RESPONSE_CODE(408);
+        return;
+      }
+      else if (offset <
+            (resource_entry->value ? resource_entry->value->length : 0)) {
+        /* Upload is not sequential - block duplicated */
+        goto just_respond;
+      }
+      /* Add in new block to end of current data */
+      resource_entry->value = coap_new_string(offset + size);
+      memcpy (&resource_entry->value->s[offset], data, size);
+      resource_entry->value->length = offset + size;
+      if (value) {
+        memcpy (resource_entry->value->s, value->s, value->length);
+        coap_delete_string(value);
+      }
+    }
+just_respond:
+    if (block1.m) {
+      response->code = COAP_RESPONSE_CODE(231);
+    }
+    else if (resource_entry->created) {
+      response->code = COAP_RESPONSE_CODE(201);
+    }
+    else {
+      response->code = COAP_RESPONSE_CODE(204);
+    }
+    coap_add_option(response,
+                    COAP_OPTION_BLOCK1,
+                    coap_encode_var_safe(buf, sizeof(buf),
+                                         ((block1.num << 4) |
+                                          (block1.m << 3) |
+                                          block1.szx)),
+                    buf);
+  }
+  else if (coap_get_data(request, &size, &data) && (size > 0)) {
+    /* Not a BLOCK1 with data */
+    if (resource_entry->value) {
+      coap_delete_string(resource_entry->value);
+      resource_entry->value = NULL;
+    }
+    resource_entry->value = coap_new_string(size);
+    memcpy (resource_entry->value->s, data, size);
+    resource_entry->value->length = size;
+  }
+  else {
+    /* Not a BLOCK1 and no data */
+    if (resource_entry->value) {
+      coap_delete_string(resource_entry->value);
+      resource_entry->value = NULL;
+    }
+  }
+}
+
+/*
+ * Unknown Resource PUT handler
+ */
+
+static void
+hnd_unknown_put(coap_context_t *ctx,
+                coap_resource_t *resource UNUSED_PARAM,
+                coap_session_t *session,
+                coap_pdu_t *request,
+                coap_binary_t *token,
+                coap_string_t *query,
+                coap_pdu_t *response
+) {
+  int resource_flags = 0;	
+  coap_resource_t *r;
+  coap_string_t *uri_path;
+
+  /* get the uri_path - will will get used by coap_resource_init() */
+  uri_path = coap_get_uri_path(request);
+  if (!uri_path) {
+    response->code = COAP_RESPONSE_CODE(404);
+    return;
+  }
+
+  if (dynamic_count >= support_dynamic) {
+    response->code = COAP_RESPONSE_CODE(406);
+    return;
+  }
+
+  /*
+   * Create a resource to handle the new URI
+   * uri_path will get deleted when the resource is removed
+   */
+  r = coap_resource_init((coap_str_const_t*)uri_path,
+        COAP_RESOURCE_FLAGS_RELEASE_URI | resource_flags);
+  coap_add_attr(r, coap_make_str_const("title"), coap_make_str_const("\"Dynamic\""), 0);
+  coap_register_handler(r, COAP_REQUEST_PUT, hnd_put);
+  coap_register_handler(r, COAP_REQUEST_DELETE, hnd_delete);
+  /* We possibly want to Observe the GETs */
+  coap_resource_set_get_observable(r, 1);
+  coap_register_handler(r, COAP_REQUEST_GET, hnd_get);
+  coap_add_resource(ctx, r);
+
+  /* Do the PUT for this first call */
+  hnd_put(ctx, r, session, request, token, query, response);
+
+  return;
+}
 
 
 /* cbor description of oic/res resource */
@@ -262,125 +950,6 @@ desc_onoff(uint8_t **data){
     return ret;  
 }
 
-static void
-SW_return_bootkey(coap_string_t *response)
-{
-  int nr =0;
-  uint8_t req_buf[30];
-  uint8_t *buf = req_buf;
-  if (ASSW_KEY != NULL)free(ASSW_KEY);
-  ASSW_KEY = coap_malloc(COSE_algorithm_AES_CCM_16_64_128_KEY_LEN);
-  prng(ASSW_KEY, COSE_algorithm_AES_CCM_16_64_128_KEY_LEN);
-
-  nr += cbor_put_map(&buf, 2);
-  nr += cbor_put_number(&buf, BOOT_KEY);
-  nr += cbor_put_bytes(&buf, ASSW_KEY, COSE_algorithm_AES_CCM_16_64_128_KEY_LEN);
-  nr += cbor_put_number(&buf, BOOT_NAME);
-  nr += cbor_put_bytes(&buf, SW_identifier.s, SW_identifier.length);
-  response->length = nr;
-  response->s = coap_malloc(nr);
-  memcpy(response->s,req_buf, nr);
-  return;
-}
-
-/* SW_return_AS
- * returns address of AS  
- */
-static void
-SW_return_AS(coap_string_t *response)
-{
-  int nr =0;
-  uint8_t req_buf[30];
-  uint8_t *buf = req_buf;
- 
-  if (IP_AS != NULL){ 
-	nr += cbor_put_map(&buf, 1);
-    nr += cbor_put_number(&buf, OAUTH_CRH_AS);
-    nr += cbor_put_text(&buf, (char *)IP_AS, IP_AS_len);
-  }
-  response->length = nr;
-  response->s = coap_malloc(nr);
-  memcpy(response->s,req_buf, nr);
-  return;
-}
-
-
-
-/* SW_return_nonce
- * returns nonce  
- */
-static void
-SW_return_nonce(coap_string_t *response, uint8_t *cnonce)
-{
-  int nr =0;
-  uint8_t req_buf[30];
-  uint8_t *buf = req_buf;
- 
-  if (cnonce != NULL){ 
-	nr += cbor_put_map(&buf, 1);
-    nr += cbor_put_number(&buf, OAUTH_OSC_PROF_NONCE2);
-    nr += cbor_put_bytes(&buf, cnonce, 8);
-  }
-  response->length = nr;
-  response->s = coap_malloc(nr);
-  memcpy(response->s,req_buf, nr);
-  return;
-}
-
-
-
-/* switch_create_context
- * creates context from information stored in token and salt_loc
- */
-static void
-switch_create_context(oauth_token_t *token, uint8_t *nonce){
-  
-  oauth_cnf_t *pt = token->osc_sec_config;
-  uint8_t *rid  = coap_malloc(pt->server_id_len);
-  uint8_t *cid  = coap_malloc(pt->client_id_len);
-  uint8_t *ctid = coap_malloc(pt->context_id_len);
-  uint8_t *ms   = coap_malloc(pt->ms_len);
-  
-  for (uint8_t qq =0; qq < pt->ms_len; qq++) 
-                     ms[qq] = pt->ms[qq];
-  for (uint8_t qq =0; qq < pt->client_id_len; qq++) 
-                     cid[qq] = pt->client_id[qq];
-  for (uint8_t qq =0; qq < pt->server_id_len; qq++) 
-                     rid[qq] = pt->server_id[qq];
-  for (uint8_t qq =0; qq < pt->context_id_len; qq++) 
-                     ctid[qq] = pt->context_id[qq];
-  oscore_ctx_t *osc_ctx = oscore_derive_ctx(
-    pt->ms, pt->ms_len, nonce, 24, 
-    pt->alg,
-    cid, pt->client_id_len, 
-    rid, pt->server_id_len, 
-    ctid, pt->context_id_len,
-    OSCORE_DEFAULT_REPLAY_WINDOW);
-    pt->ms = NULL;
-    pt->ms_len = 0;
-  oscore_enter_context(osc_ctx);
-}
-
-
-
-/*
- * Return error and error message
- */
-static void
-oscore_error_return(uint8_t error, coap_pdu_t *response,
-                                       const char *message){
-  unsigned char opt_buf[5];
-  coap_log(LOG_WARNING,"%s",message);
-  response->code = error;
-  response->data = NULL;
-  response->used_size = response->token_length;
-  coap_add_option(response,
-                COAP_OPTION_CONTENT_FORMAT,
-                coap_encode_var_safe(opt_buf, sizeof(opt_buf),
-                COAP_MEDIATYPE_TEXT_PLAIN), opt_buf);
-  coap_add_data(response, strlen(message), 
-                                  (const uint8_t *)message);
-}
 
 /*
  * POST handler - /oic/onoff
@@ -397,33 +966,50 @@ ocf_hnd_post_switch(coap_context_t *ctx UNUSED_PARAM,
 ) {
   /* resource is found; handle the switch request  */
   uint8_t* data = NULL;
+  coap_string_t *SW_ret_data = NULL;
   size_t size = 0; 
-
-
+  coap_opt_iterator_t opt_iter;
+  coap_opt_t *opt = NULL;
+  uint16_t content_format  =  COAP_MEDIATYPE_TEXT_PLAIN;
+  if (request) {
+	coap_block_t block2 = { 0, 0, 0};
+	if (coap_get_block(request, COAP_OPTION_BLOCK2, &block2)){	
+	  ret_data_t *item = SC_corresponding_data(session);
+	  SW_ret_data = item->SC_ret_data;
+          coap_add_data_blocked_response(resource, session, request, response, token,
+                                 content_format, -1,
+                                 SW_ret_data->length, SW_ret_data->s);
+         SC_verify_release(session, response);				 
+         return;
+     } /* coap_get_block */
+  } /* request */
+  
   data = assemble_data(session, request, response, &size);
-  if (data == (void *)-1)return;  /* more blocks to arrive */
-  if ((data == NULL)| (size == 0)){
-	  oscore_error_return(COAP_RESPONSE_CODE(400), 
-      response, "Did not find request data\n");
-	  return;
+  if (data == (void *)-1)return;  /* more blocks to arrive */ 
+  /* RG_ret_data has been used for blocked response => can be liberated for new request */
+  SW_ret_data = SC_new_return_data(session);
+  if ((size < 1) || (data == NULL) || (SW_ret_data == NULL)){
+      server_error_return(COAP_RESPONSE_CODE(400), 
+         response, "log did not arrive\n");
+      return;
   }
-    if (!session->oscore_encryption){
-	   if(SW_ret_data.s != NULL)coap_free(SW_ret_data.s);
-       SW_return_AS(&SW_ret_data);
-       response->code = COAP_RESPONSE_CODE(401);
-       coap_add_data_blocked_response(resource, session, request, response, token,
-                                 COAP_MEDIATYPE_APPLICATION_ACE_CBOR, -1,
-                                 SW_ret_data.length, SW_ret_data.s);
-     return;
-    }
+  /* check on content format */  
+  opt = coap_check_option(request, COAP_OPTION_CONTENT_FORMAT, &opt_iter);
+  if (opt){
+    content_format = (int)coap_decode_var_bytes(coap_opt_value(opt),
+                                                  coap_opt_length(opt));
+  }
+  /* Is this right content format */
+  if (content_format == COAP_MEDIATYPE_APPLICATION_ACE_CBOR) fprintf(stderr,"content format is OK ??");
+  
     if ( query == NULL){
-	  oscore_error_return(COAP_RESPONSE_CODE(400), 
+	  server_error_return(COAP_RESPONSE_CODE(400), 
       response, "No query present\n");
 	  return;
 	}
 	if ((strncmp("if=oic.if.a", (char *)query->s, query->length) != 0)
 	  || (query->length != 11)){
-      oscore_error_return(COAP_RESPONSE_CODE(400), 
+      server_error_return(COAP_RESPONSE_CODE(400), 
       response, "illegal if specification\n");
 	  return;
 	}
@@ -441,7 +1027,7 @@ ocf_hnd_post_switch(coap_context_t *ctx UNUSED_PARAM,
                        && (property_len == 5)){
 			  elem = cbor_get_next_element(&data);
 			  if (elem != CBOR_SIMPLE_VALUE){
-			    oscore_error_return(COAP_RESPONSE_CODE(400), 
+			    server_error_return(COAP_RESPONSE_CODE(400), 
                           response, "not a boolean value");
 	               return;
 			  }
@@ -453,14 +1039,14 @@ ocf_hnd_post_switch(coap_context_t *ctx UNUSED_PARAM,
 				  switch_value = 1;
 				  fprintf(stderr,"switch is on \n");
 			  } else {			  
-                     oscore_error_return(COAP_RESPONSE_CODE(400), 
+                     server_error_return(COAP_RESPONSE_CODE(400), 
                      response, "not a boolean value");
 	              return;				  
 			  }
 			}  /* if strncmp */
 	    }  /* if property_len > */
         else{
-          oscore_error_return(COAP_RESPONSE_CODE(400), 
+          server_error_return(COAP_RESPONSE_CODE(400), 
           response, "Decode error in switch payload");
           return;
         } /* if property_len > */
@@ -468,42 +1054,10 @@ ocf_hnd_post_switch(coap_context_t *ctx UNUSED_PARAM,
       response->code = COAP_RESPONSE_CODE(201);
     } /* if elem */
     coap_add_data_blocked_response(resource, session, request, response, token,
-                                 COAP_MEDIATYPE_APPLICATION_ACE_CBOR, -1,
+                                 content_format, -1,
                                  0, NULL);
+    SC_verify_release(session, response);				                               
     return;
-}
-
-
-/* switch_get_scope
- * fills the scope array of token
- * from the received CBOR map stored in the token->scope
- */
-static uint8_t
-switch_get_scope(uint8_t *data, uint8_t **scope, size_t *len){
-  return cbor_get_string_array(&data, scope, len);
-}
-
-
-/* switch_prepare_aad
- * prepares aad for switch client and server 
- * to encrypt and decrypt
- */
-static size_t
-switch_prepare_aad(int8_t alg, uint8_t *aad_buffer){
-  size_t ret = 0;
-  uint8_t buffer[10];
-  uint8_t *buf = buffer;
-  size_t buf_len = 0;
-  buf_len += cbor_put_map(&buf, 1);
-  buf_len += cbor_put_number(&buf, COSE_HP_ALG);
-  buf_len += cbor_put_number(&buf, alg);
-  char encrypt0[] = "Encrypt0";
-  /* Begin creating the AAD */
-  ret += cbor_put_array(&aad_buffer, 3);
-  ret += cbor_put_text(&aad_buffer, encrypt0, strlen(encrypt0));
-  ret += cbor_put_bytes(&aad_buffer, buffer, buf_len);
-  ret += cbor_put_bytes(&aad_buffer, NULL, 0); 
-  return ret;
 }
 
 /*
@@ -519,7 +1073,7 @@ ocf_hnd_wk_d(coap_context_t  *ctx UNUSED_PARAM,
              coap_string_t *query UNUSED_PARAM,
              coap_pdu_t *response)
 {
-	 oscore_error_return(COAP_RESPONSE_CODE(400), 
+	 server_error_return(COAP_RESPONSE_CODE(400), 
      response, "Not implemented");
 }
 
@@ -536,7 +1090,7 @@ ocf_hnd_wk_p(coap_context_t  *ctx UNUSED_PARAM,
              coap_string_t *query UNUSED_PARAM,
              coap_pdu_t *response)
 {
-	 oscore_error_return(COAP_RESPONSE_CODE(400), 
+	 server_error_return(COAP_RESPONSE_CODE(400), 
      response, "Not implemented");
 }
 
@@ -554,6 +1108,38 @@ ocf_hnd_wk_res(coap_context_t  *ctx UNUSED_PARAM,
              coap_string_t *query,
              coap_pdu_t *response)
 {
+  uint8_t* data = NULL;
+  coap_string_t *SW_ret_data = NULL;
+  size_t size = 0; 
+  coap_opt_iterator_t opt_iter;
+  coap_opt_t *opt = NULL;
+  uint16_t content_format  =  COAP_MEDIATYPE_TEXT_PLAIN;
+  if (request) {
+	coap_block_t block2 = { 0, 0, 0};
+	if (coap_get_block(request, COAP_OPTION_BLOCK2, &block2)){	
+	  ret_data_t *item = SC_corresponding_data(session);
+	  SW_ret_data = item->SC_ret_data;
+          coap_add_data_blocked_response(resource, session, request, response, token,
+                                 content_format, -1,
+                                 SW_ret_data->length, SW_ret_data->s);
+         SC_verify_release(session, response);				 
+         return;
+     } /* coap_get_block */
+  } /* request */
+  
+  data = assemble_data(session, request, response, &size);
+  if (data == (void *)-1)return;  /* more blocks to arrive */ 
+  /* RG_ret_data has been used for blocked response => can be liberated for new request */
+  SW_ret_data = SC_new_return_data(session);
+  /* check on content format */  
+  opt = coap_check_option(request, COAP_OPTION_CONTENT_FORMAT, &opt_iter);
+  if (opt){
+    content_format = (int)coap_decode_var_bytes(coap_opt_value(opt),
+                                                  coap_opt_length(opt));
+  }
+  /* Is this right content format */
+  if (content_format == COAP_MEDIATYPE_APPLICATION_ACE_CBOR) fprintf(stderr,"content format is OK ??");	
+  
   size_t nr = 0;
   uint8_t *req_buf = coap_malloc(1000);
   uint8_t *buf = req_buf;
@@ -573,231 +1159,29 @@ ocf_hnd_wk_res(coap_context_t  *ctx UNUSED_PARAM,
 	 } 
 	 else if ((strncmp("rt=oic.if.ll", (char *)query->s, query->length) == 0)
 	        && ( query->length == 11)){
-		 oscore_error_return(COAP_RESPONSE_CODE(400), 
+		 server_error_return(COAP_RESPONSE_CODE(400), 
              response, "oic.if.ll to be implemented");
              return;
 	 }
 	 else{
-	   oscore_error_return(COAP_RESPONSE_CODE(400), 
+	   server_error_return(COAP_RESPONSE_CODE(400), 
              response, "Bad request");
              return;
 	 }
   }  /* query */
   else {
-	oscore_error_return(COAP_RESPONSE_CODE(400), 
+	server_error_return(COAP_RESPONSE_CODE(400), 
              response, "Bad request");
     return;
   }
   response->code = COAP_RESPONSE_CODE(201);
   coap_add_data_blocked_response(resource, session, request, response, token,
-                                 COAP_MEDIATYPE_APPLICATION_ACE_CBOR, -1,
+                                 content_format, -1,
                                  nr, req_buf);   
   return;
   coap_free(req_buf);
 }
 
-
-/*
- * POST handler - /oic/boot
- * exchanges shared secret with controller
- */
-static void
-ocf_hnd_post_boot(coap_context_t  *ctx UNUSED_PARAM,
-             struct coap_resource_t *resource UNUSED_PARAM,
-             coap_session_t *session,
-             coap_pdu_t *request,
-             coap_binary_t *token,
-             coap_string_t *query UNUSED_PARAM,
-             coap_pdu_t *response)
-{
-  uint8_t* data = NULL;
-  size_t size = 0; 
-  uint8_t  ok = 0;
-  uint8_t  tag = 0;
-  
-	/* check whether data need to be returend */
-  if (request) {
-	coap_block_t block2 = { 0, 0, 0};
-	if (coap_get_block(request, COAP_OPTION_BLOCK2, &block2)){	
-      coap_add_data_blocked_response(resource, session, request, response, token,
-                                 COAP_MEDIATYPE_APPLICATION_ACE_CBOR, -1,
-                                 SW_ret_data.length, SW_ret_data.s);
-     return;
-     } /* coap_get_block */
-  } /* request */
-	
-  data = assemble_data( session, request, response, &size);
-  if (data == (void *)-1)return;  /* more blocks to arrive */
-  if ((data == NULL) | (size == 0)){
-	  oscore_error_return(COAP_RESPONSE_CODE(400), 
-      response, "Did not find request data\n");
-	  return;
-  }
-  
-    uint8_t  elem = cbor_get_next_element(&data);
-    if (elem == CBOR_MAP){ 
-      uint64_t map_size = cbor_get_element_size(&data);
-      for (uint i=0 ; i < map_size; i++){
-        tag = cose_get_tag(&data);
-        switch (tag){
-          case OAUTH_CLAIM_ACCESSTOKEN:
-            if (ASSW_key_id != NULL) free(ASSW_key_id);
-            cbor_get_string_array(&data, 
-                           &ASSW_key_id, &ASSW_key_id_len);
-            break;
-          case OAUTH_CLAIM_KEYINFO:
-            if (IP_AS != NULL) free(IP_AS);
-            cbor_get_string_array(&data, 
-                           &IP_AS, &IP_AS_len);
-            break;
-          default:
-            ok = 1;
-            break;
-        } /* switch  */ 
-        if(ok != 0){
-          oscore_error_return(COAP_RESPONSE_CODE(400), 
-          response, "Decode error in switch boot payload\n");
-          return;
-        } /* if ok */
-      } /* for map_size  */
-      if(SW_ret_data.s != NULL)coap_free(SW_ret_data.s);
-      SW_return_bootkey(&SW_ret_data);
-    } /* if elem */
-    response->code = COAP_RESPONSE_CODE(201);  
-    coap_add_data_blocked_response(resource, session, request, response, token,
-                                 COAP_MEDIATYPE_APPLICATION_ACE_CBOR, -1,
-                                 SW_ret_data.length, SW_ret_data.s);   
-    return; 
-}
-
-
-/*
- * POST handler - /oic/authz-info
- * receives CWT with authorization to manipulate switch
- * sets up the oscore context
- */
-void
-switch_hnd_post_authz(coap_context_t  *ctx UNUSED_PARAM,
-             struct coap_resource_t *resource UNUSED_PARAM,
-             coap_session_t *session,
-             coap_pdu_t *request,
-             coap_binary_t *in_token,
-             coap_string_t *query UNUSED_PARAM,
-             coap_pdu_t *response)
-{
-  oauth_cwtkey_t *key_enc = NULL;
-  size_t size;
-  uint8_t *data;
-  oauth_token_t *token = NULL;
-  uint8_t *cnonce = NULL;
-  
- 	/* check whether data need to be returend */
-  if (request) {
-	coap_block_t block2 = { 0, 0, 0};
-	if (coap_get_block(request, COAP_OPTION_BLOCK2, &block2)){	
-      coap_add_data_blocked_response(resource, session, request, response, in_token,
-                                 COAP_MEDIATYPE_APPLICATION_ACE_CBOR, -1,
-                                 SW_ret_data.length, SW_ret_data.s);
-     return;
-     } /* coap_get_block */
-  } /* request */
-	 
-  
-/* one authorizations can be returned:
- * authorization to manipulate switch
- */
-  data = assemble_data(session, request, response, &size);
-  if (data == (void *)-1)return;  /* more blocks to arrive */
-  if ((data == NULL) | (size == 0)){
-	  oscore_error_return(COAP_RESPONSE_CODE(400), 
-      response, "Did not find request data");
-	  return;
-  }
-  
-  if (oauth_strip(&data, &cnonce, &key_enc) == 1){
-      oscore_error_return(COAP_RESPONSE_CODE(400), 
-                      response, "Cannot extract CWT");
-      return;
-    } /* if oauth_strip  */
-
-/*  keyenc->data points to PoP CWT
-    nonce points to nonce */
-  uint8_t aad_buffer[35];
-  char ocf_switch[] = "oic_onoff";
-  uint8_t *enc_token = key_enc->data;
-  uint8_t elem = cbor_get_next_element(&enc_token);
-  if (elem != CBOR_TAG){
-	if (cnonce != NULL) free(cnonce);
-	if(key_enc != NULL) oauth_delete_cwt_key(key_enc);
-    oscore_error_return(COAP_RESPONSE_CODE(400), 
-            response, "No CWT tag found");
-    return;
-  }
-  size_t aad_len = switch_prepare_aad(
-                   COSE_Algorithm_AES_CCM_16_64_128, aad_buffer);
-  token = oauth_decrypt_token(&enc_token, ASSW_KEY, aad_buffer, aad_len);
-  if (token == NULL){
-	if (cnonce != NULL) free(cnonce);
-	if(key_enc != NULL) oauth_delete_cwt_key(key_enc);
-	oscore_error_return(COAP_RESPONSE_CODE(400), 
-            response, "impossible to decrypt token");
-    return;
-  }
-  size_t scope_len;
-  uint8_t *scope = NULL;
-  switch_get_scope(token->scope, &scope, &scope_len);
-  if ((strncmp((char *)scope, ocf_switch, scope_len) == 0)
-       && (scope_len == strlen(ocf_switch))){
-/* authorization for switch manipulation */
-/* create rsnonce  for return */
-    rsnonce = coap_malloc(8);
-    uint32_t nonce1 = (uint32_t)rand();
-    uint32_t nonce2 = (uint32_t)rand();
-    for (int qq =0 ; qq < 4; qq ++){
-      rsnonce[qq] = ((nonce1 >> (qq*8)) & 0xFF);
-      rsnonce[qq + 4] = ((nonce2 >> (qq*8)) & 0xFF);
-    } /* for */
-  } /* if ocf_switch */
-  else{
-	if (cnonce != NULL) free(cnonce);
-	if(key_enc != NULL) oauth_delete_cwt_key(key_enc);
-	oauth_delete_token(token);
-    oscore_error_return(COAP_RESPONSE_CODE(400), 
-                               response, "Illegal scope value");
-    return;
-  }
-  
-/* cnonce contains received 8-byte nonce      */
-  oauth_cnf_t *pt= token->osc_sec_config;
-  if (pt == NULL){
-    oscore_error_return(COAP_RESPONSE_CODE(400), 
-                               response, "configuration is missing");
-    return;
-  }
-  uint8_t  *nonce = coap_malloc(24);
-  uint32_t nonce1 = (uint32_t)rand();
-  uint32_t nonce2 = (uint32_t)rand();
-  for (int qq =0 ; qq < 4; qq ++){
-     nonce[qq + 16] = ((nonce1 >> (qq*8)) & 0xFF);
-     nonce[qq + 20] = ((nonce2 >> (qq*8)) & 0xFF);
-     nonce[qq+8] = cnonce[qq];
-     nonce[qq+12] = cnonce[qq+4];
-     nonce[qq] = pt->salt[qq];
-     nonce[qq+4] = pt->salt[qq+4];
-  }
-  /* do not free nonce, because used in oscore context */
-  if (cnonce != NULL) free(cnonce);
-  if(key_enc != NULL) oauth_delete_cwt_key(key_enc);
-  switch_create_context(token, nonce);
-  oauth_delete_token(token);
-  if(SW_ret_data.s != NULL)coap_free(SW_ret_data.s);
-  SW_return_nonce(&SW_ret_data, nonce+16);
-  response->code = COAP_RESPONSE_CODE(201);
-  coap_add_data_blocked_response(resource, session, request, response, in_token,
-                                 COAP_MEDIATYPE_APPLICATION_ACE_CBOR, -1,
-                                 SW_ret_data.length, SW_ret_data.s);   
-  return;
-}
 
 /*
  * switch_return_value
@@ -834,59 +1218,455 @@ ocf_hnd_get_switch(coap_context_t  *ctx UNUSED_PARAM,
              coap_pdu_t *response)
 {
 		/* check whether data need to be returned */
+  uint8_t* data = NULL;
+  coap_string_t *SW_ret_data = NULL;
+  size_t size = 0; 
+  coap_opt_iterator_t opt_iter;
+  coap_opt_t *opt = NULL;
+  uint16_t content_format  =  COAP_MEDIATYPE_TEXT_PLAIN;
   if (request) {
 	coap_block_t block2 = { 0, 0, 0};
 	if (coap_get_block(request, COAP_OPTION_BLOCK2, &block2)){	
-	  if (block2.num > 0){
+	  ret_data_t *item = SC_corresponding_data(session);
+	  SW_ret_data = item->SC_ret_data;
           coap_add_data_blocked_response(resource, session, request, response, token,
-                                 COAP_MEDIATYPE_APPLICATION_ACE_CBOR, -1,
-                                 SW_ret_data.length, SW_ret_data.s);
-          return;
-       } /* block2.num */
+                                 content_format, -1,
+                                 SW_ret_data->length, SW_ret_data->s);
+         SC_verify_release(session, response);				 
+         return;
      } /* coap_get_block */
   } /* request */
-  if (!session->oscore_encryption){
-	 if(SW_ret_data.s != NULL)coap_free(SW_ret_data.s);
-	 fprintf(stderr,"invoke SW_return_AS \n");
-     SW_return_AS(&SW_ret_data);
-     response->code = COAP_RESPONSE_CODE(401);
-     coap_add_data_blocked_response(resource, session, request, response, token,
-                                 COAP_MEDIATYPE_APPLICATION_ACE_CBOR, -1,
-                                 SW_ret_data.length, SW_ret_data.s);
-     return;
-   }
-   if ( query == NULL){
-	  oscore_error_return(COAP_RESPONSE_CODE(400), 
-      response, "No query present");
+  
+  data = assemble_data(session, request, response, &size);
+  if (data == (void *)-1)return;  /* more blocks to arrive */ 
+  /* RG_ret_data has been used for blocked response => can be liberated for new request */
+  SW_ret_data = SC_new_return_data(session);
+  /* check on content format */  
+  opt = coap_check_option(request, COAP_OPTION_CONTENT_FORMAT, &opt_iter);
+  if (opt){
+    content_format = (int)coap_decode_var_bytes(coap_opt_value(opt),
+                                                  coap_opt_length(opt));
+  }
+  /* Is this right content format */
+   if (content_format != COAP_MEDIATYPE_APPLICATION_CBOR){
+	   server_error_return(COAP_RESPONSE_CODE(400), 
+                   response, "Content format is wrong, should be application/cbor");
 	  return;
+   }	
+  
+   if ( query == NULL){
+	  
 	}
 	if ((strncmp("if=oic.if.a", (char *)query->s, query->length) != 0)
 	    || (query->length != 11)){
-      oscore_error_return(COAP_RESPONSE_CODE(400), 
+      server_error_return(COAP_RESPONSE_CODE(400), 
       response, "illegal if specification");
 	  return;
 	}
-    if(SW_ret_data.s != NULL)coap_free(SW_ret_data.s);
     uint8_t cbor_value = 0;
     if (switch_value == 0) cbor_value = CBOR_FALSE;
     else cbor_value = CBOR_TRUE;
-    switch_return_value(&SW_ret_data, cbor_value);
+    switch_return_value(SW_ret_data, cbor_value);
     response->code = COAP_RESPONSE_CODE(201);
     coap_add_data_blocked_response(resource, session, request, response, token,
-                                 COAP_MEDIATYPE_APPLICATION_ACE_CBOR, -1,
-                                 SW_ret_data.length, SW_ret_data.s);   
+                                 content_format, -1,
+                                 SW_ret_data->length, SW_ret_data->s);   
     return;
-
 }
 
-/*
- * init resource for switch
+/* verify_discovery
+ * returns 1 when no discovery address available
+ * returns 0 when host contains discovered address
  */
+static int8_t verify_discovery(client_request_t *client){
+	uint16_t port;
+	coap_string_t *host = get_discovered_host_port(&port);
+    coap_log(LOG_INFO,"discovered host port is %d \n", port);
+    coap_log(LOG_INFO,"discovered host address is %s \n",host->s);
+	if (host == NULL) return 1;
+	/* coaps is wanted after discovery , set coaps port  and scheme */
+	if (port == COAP_DEFAULT_PORT) port = COAPS_DEFAULT_PORT;	
+    set_port(client, port);
+	set_host(client, host);
+    set_scheme( client, COAP_URI_SCHEME_COAPS);
+	coap_free(host->s);
+	coap_free(host);
+	return 0;
+}
 
-void
-switch_init_resources(coap_context_t *ctx) {
-	
-/* initialize list of endpoints of this ocf device */
+/* pledge_connect_pledge
+ * starts DTLS connection with Registrar
+ * returns 0; when enrolled
+ * returns 1: when failure
+ */
+int8_t
+pledge_connect_pledge(client_request_t *client){
+	if (client == NULL) return 1;
+/* start new session to registrar with discovered host*/
+  set_message_type(client, COAP_MESSAGE_CON);
+/* DTLS preparations */
+  static char cert_nm[] = PLEDGE_COMB; 
+  static char ca_nm[] = CA_MASA_CRT;
+  char *ca = ca_nm;
+  char *cert = cert_nm;
+  set_certificates( client, cert, ca);
+  
+  /* Start DTLS connection with ping  */ 
+  coap_session_t *session = coap_start_session(client);
+  if (session == NULL){
+	  coap_log(LOG_WARNING,"start_session DTLS to Registrar failed  \n");
+	  return 1;
+  } 
+  uint16_t tid = coap_new_message_id (session);
+  coap_pdu_t *ping = NULL;
+  ping = coap_pdu_init(COAP_MESSAGE_CON, 0, tid, 0);  
+  if (ping != NULL){ 
+      coap_tid_t tid = coap_send(session, ping);
+      if (tid ==  COAP_INVALID_TID) return 1;
+      return 0;
+  }
+  return 1;
+}
+
+coap_string_t  signed_request_voucher = { .length = 0 , .s = NULL};
+coap_string_t request_voucher = {.length =0, .s = NULL};
+   
+int8_t  
+pledge_voucher_request(client_request_t *client){ 
+  if (client == NULL)return 1;
+	/* continue session to registrar with returned registrar certificate*/
+  set_message_type( client, COAP_MESSAGE_CON);
+  coap_string_t path = { .length =0 , .s = NULL};
+  /* est/rv  with signed requestvoucher to registrar */ 
+  set_resp_handler(add_voucher);
+  uri_options_on(client);
+  set_flags( client, FLAGS_BLOCK); 
+  char rv[] = ".well-known/brski/rv";
+  set_method( client, COAP_REQUEST_POST);
+  path.s = (uint8_t *)rv;
+  path.length = strlen(rv);
+  set_path(client, &path);
+  if (request_voucher.s != NULL) coap_free(request_voucher.s);
+  request_voucher.s = NULL;
+  if (masa_voucher.s != NULL) coap_free(masa_voucher.s);
+  masa_voucher.s = NULL;
+  masa_code = 0;
+  char cpc[]           = PLEDGE_COMB;          /* contains pledge certificate and private key */
+  char psd[]           = PLEDGE_SERVER_DER;    /* contains registrar certificate in DER */
+  char *registrar_file = psd;
+  char *pledge_comb    = cpc;
+  int8_t ok = brksi_make_signed_rv(&signed_request_voucher, &request_voucher, registrar_file, pledge_comb);
+  set_payload(client, &signed_request_voucher);
+  if (ok != 0) return 1;
+  if (JSON_set() == 1)
+     return coap_start_request( client, COAP_MEDIATYPE_APPLICATION_VOUCHER_CMS_JSON);
+  else
+     return coap_start_request( client, COAP_MEDIATYPE_APPLICATION_VOUCHER_COSE_CBOR);
+}
+
+int8_t
+pledge_status_voucher(client_request_t *client){
+  coap_string_t path = { .length =0 , .s = NULL};
+  int8_t result;
+  if (signed_request_voucher.s != NULL)coap_free(signed_request_voucher.s);
+  signed_request_voucher.s = NULL;    
+  /* local MASA test */  
+  char cmc[] = MASA_SRV_CRT;
+  char ca_name[] = CA_MASA_CRT;
+  char *masa_cert_name = cmc;
+  if (masa_voucher.s == NULL){
+	 coap_log(LOG_ERR," No MASA voucher returned \n");
+	 return 1;
+  }
+  coap_string_t *voucher = NULL;
+  if (JSON_set() == JSON_OFF)
+      voucher = brski_verify_cose_signature(&masa_voucher, masa_cert_name, ca_name);
+  else
+      voucher = brski_verify_cms_signature(&masa_voucher, ca_name, masa_cert_name);
+  if (voucher == NULL){
+	  coap_log(LOG_ERR," signature of returned masa voucher is wrong \n");
+	  if (request_voucher.s != NULL)coap_free(request_voucher.s); 
+	  request_voucher.s = NULL;  
+	  return 1;
+  }
+  result = brski_check_voucher(voucher, &request_voucher);
+  if (voucher->s != NULL)coap_free(voucher->s);
+  coap_free(voucher);
+  if (request_voucher.s != NULL)coap_free(request_voucher.s);
+  request_voucher.s = NULL;    
+  if (result != 0){
+	  coap_log(LOG_ERR, "voucher request and masa returned voucher do not correspond \n");
+	  return 1;
+  }
+  /* est/vs  */
+  int16_t ct = COAP_MEDIATYPE_APPLICATION_CBOR;
+  if (registrar_audit.s != NULL) coap_free(registrar_audit.s);
+  registrar_audit.s = NULL;
+  audit_code = 0;
+  set_resp_handler(add_audit);
+  char vs[] = ".well-known/brski/vs";
+  path.s = (uint8_t *)vs;
+  path.length = strlen(vs);
+  set_path(client, &path);
+  remove_flags( client, FLAGS_BLOCK);
+  set_method (client, COAP_REQUEST_POST);
+  coap_string_t status = { .length = 0, .s = NULL};
+  if (JSON_set() == JSON_OFF){
+      brski_cbor_voucherstatus(&status);
+      ct = COAP_MEDIATYPE_APPLICATION_CBOR;
+  } else {
+	  brski_json_voucherstatus(&status);
+	  ct = COAP_MEDIATYPE_APPLICATION_JSON;
+  }
+  if (status.length > 0){
+	  set_payload(client, &status);
+	  result = coap_start_request(client, ct); 
+      coap_free(status.s);
+  }  /* if status.length  */   
+   return result;
+}
+
+
+int8_t
+pledge_get_certificate(client_request_t *client){
+  coap_string_t payload = { .length =0 , .s = NULL};
+  coap_string_t path    = { .length =0 , .s = NULL};
+ /* est/crts    */
+ /* get certificate from registrar  */
+  if (registrar_cert.s != NULL)coap_free(registrar_cert.s);
+  registrar_cert.s = NULL;
+  cert_code =0;
+  char crts[] = ".well-known/est/crts";
+  path.s = (uint8_t *)crts;
+  path.length = strlen(crts);
+  if (client == NULL) return 1;
+  set_path( client, &path);
+  set_payload(client, &payload);
+  set_resp_handler(add_certificate);
+  set_method (client, COAP_REQUEST_GET);
+  return coap_start_request(client, 0);
+}
+
+#define PEM_SIZE   4096
+
+int8_t
+pledge_get_attributes(client_request_t *client){
+  /* write returned registrar_certificate to pledge trust anchor file */	
+  int ok =0;
+  char header[] = "-----BEGIN CERTIFICATE-----\n";
+  char footer[] = "-----END CERTIFICATE-----\n";
+  uint8_t pem_buf[PEM_SIZE];
+  memset(pem_buf, 0, PEM_SIZE);
+  char trust[] = PLEDGE_TRUST;
+  coap_string_t path    = { .length =0 , .s = NULL};
+  coap_string_t payload = { .length =0 , .s = NULL};
+  coap_string_t pem     = { .length =0 , .s = pem_buf};
+  if (registrar_cert.s == NULL) return 1;
+  /* convert DER certificate received in registrar_cert to PEM */
+  CHECK(mbedtls_pem_write_buffer( header, footer, registrar_cert.s, registrar_cert.length,
+                               pem_buf, PEM_SIZE, &pem.length));
+  if (pem.length > PEM_SIZE){
+	  coap_log(LOG_WARNING," not enough space to generate PEM file \n");
+	  goto exit;
+  }  
+  if (pem.length > 0)pem.length--;                                               
+  ok = write_file_mem(trust, &pem);
+  if (ok != 0){
+	  coap_log(LOG_WARNING," cannot write registrar certificate  to file\n");
+	  goto exit;
+  }
+ /* est/att   */
+  set_resp_handler(add_certificate);
+  remove_flags( client, FLAGS_BLOCK);
+  set_payload(client, &payload);
+  if (registrar_cert.s != NULL)coap_free(registrar_cert.s);
+  registrar_cert.s = NULL;
+  cert_code = 0;
+  char att[] = ".well-known/est/att";
+  path.s = (uint8_t *)att;
+  path.length = strlen(att);
+  set_path( client, &path);
+  set_method (client, COAP_REQUEST_GET);
+  return coap_start_request(client, 0);
+exit:
+  return ok;
+}
+
+static int8_t
+store_enrolled(void ){
+    int ok =0;
+    char header[] = "-----BEGIN CERTIFICATE-----\n";
+    char footer[] = "-----END CERTIFICATE-----\n";
+    if ((cert_code >> 5) != 2) return 2;
+    if (registrar_cert.s == NULL) return 2;    
+    uint8_t pem_buf[PEM_SIZE];
+    memset(pem_buf, 0, PEM_SIZE);
+    char trust_f[] = PLEDGE_ENROLL_CRT;
+    char comb_f[]  = PLEDGE_ENROLL_COMB;
+    char key_f[]   = PLEDGE_KEY;
+    coap_string_t pem     = { .length =0 , .s = pem_buf};
+  /* convert DER certificate received in registrar_cert to PEM */
+    CHECK(mbedtls_pem_write_buffer( header, footer, registrar_cert.s, registrar_cert.length,
+                               pem_buf, PEM_SIZE, &pem.length));
+                            
+    if (pem.length > PEM_SIZE){
+	  coap_log(LOG_WARNING," not enough space to generate PEM file \n");
+	  return 2;
+    } 
+    if (pem.length > 0)pem.length--;
+    ok = write_file_mem(trust_f, &pem);
+    if (ok != 0){
+	  coap_log(LOG_WARNING," store_enrolled cannot write registrar certificate  to file\n");
+	  return ok;
+    }
+    if (brski_combine_cert_key( key_f, trust_f, comb_f) != 0)
+          coap_log(LOG_ERR,"Registrar server key and certificate are not cpmbined \n");
+    return 0;
+exit:
+   return ok;
+}
+
+ 
+/* return_subject_sn
+ * returns serial number contained in subject of x509 v3 ca certificate
+ * returns Ok =0 , Nok 1
+ * name is pointer to subject asn1 string
+ * sn and sn_len contain returned serial number
+ */
+static int8_t
+return_subject_sn( mbedtls_x509_name *asn, char **sn, size_t *sn_len){
+
+   while (asn != NULL){
+        mbedtls_asn1_buf val  = asn->val;     
+	    mbedtls_asn1_buf oid  = asn->oid;
+        unsigned char *oidptr = oid.p;
+        unsigned char *valptr = oid.p;
+        uint8_t        oidval = oidptr[2];
+        if (oidval == OID_SERIAL_NUMBER){
+			char *ptr = coap_malloc(val.len);
+			*sn_len = val.len;
+			for (uint qq = oid.len + 2; qq < oid.len+ 2 + val.len; qq++){
+				ptr[qq - oid.len -2] = valptr[qq];
+			}
+			*sn = ptr;
+			return 0;
+		}
+        asn = asn->next;
+	}
+	return 1;
+}
+
+ 
+static int8_t
+add_to_home(client_request_t *client ){
+	coap_string_t certificate = { .length =0 , .s = NULL};
+    coap_string_t payload     = { .length =0 , .s = NULL};
+    coap_string_t path        = { .length =0 , .s = NULL};
+    uint8_t ok = 0;
+    char   *serial = NULL;
+    size_t serial_len = 0;
+    mbedtls_x509_crt         enroll_crt;	
+    mbedtls_x509_crt_init( &enroll_crt);
+    char file_name[] = PLEDGE_ENROLL_CRT;
+    CHECK(mbedtls_x509_crt_parse_file( &enroll_crt, file_name ) );
+    if (return_subject_sn(&(enroll_crt.subject), &serial, &serial_len)  == 1) return 1;
+    uint8_t tmp_buf[200];
+	uint8_t *buf = tmp_buf;
+	uint16_t nr = 0;
+	nr += cbor_put_array(&buf, 1);
+	nr += cbor_put_map(&buf, HC_FIELDS);
+	nr += cbor_put_number(&buf, HC_IPaddress);
+	nr += cbor_put_bytes(&buf, IP_SW.s, IP_SW.length);	
+	nr += cbor_put_number(&buf, HC_identifier);
+	nr += cbor_put_text(&buf, serial, serial_len);
+	nr += cbor_put_number(&buf, HC_standard);
+	nr += cbor_put_number(&buf, HC_standard_OCF);
+	nr += cbor_put_number(&buf, HC_deviceType);
+	nr += cbor_put_number(&buf, HC_OCF_switch);
+	assert(nr < 200);
+    if (certificate.s != NULL) coap_free(certificate.s);
+    char home[] = "home/add";
+    path.s = (uint8_t *)home;
+    path.length = strlen(home);
+    if (client == NULL) return 1;
+    set_path( client, &path);
+    payload.s = coap_malloc(nr);
+    payload.length = nr;
+    memcpy(payload.s, tmp_buf, nr);
+    set_payload(client, &payload);
+    set_method (client, COAP_REQUEST_POST);
+    ok = coap_start_request(client, 0);
+exit:
+    if (payload.s != NULL)coap_free(payload.s);
+    mbedtls_x509_crt_free( &enroll_crt );
+    return ok;
+}
+   
+int8_t 
+pledge_enroll_certificate(client_request_t *client){
+  coap_string_t path    = { .length =0 , .s = NULL};
+  coap_string_t payload = { .length =0 , .s = NULL};  
+  int8_t result = 0;
+ /* est/sen   enroll certificate  */
+  set_resp_handler(add_certificate);
+  if (registrar_cert.s != NULL)coap_free(registrar_cert.s);
+  registrar_cert.s = NULL;
+  cert_code = 0; 
+  char sen[] = ".well-known/est/sen";
+  path.s = (uint8_t *)sen;
+  path.length = strlen(sen);
+  if (client == NULL) return 1;
+  set_path( client, &path);
+  set_method( client, COAP_REQUEST_POST);
+  result = brski_create_csr(&payload);
+  if (result == 0){
+    if (payload.length > 0){
+	    set_payload( client, &payload);
+	    result = coap_start_request(client, COAP_MEDIATYPE_APPLICATION_CBOR); 
+        coap_free(payload.s);
+        payload.s = NULL;
+    }  /* if payload.length  */
+  }  /* if result  */
+  return result;
+}
+
+/* discover_node
+ * discover the registrar that may own the network */
+static coap_session_t *
+discover_node(client_request_t *client, coap_string_t *MC_coap){
+   coap_session_t *session = NULL;
+   coap_string_t query   = {.length = 0, .s = NULL};
+   coap_string_t path    = { .length =0 , .s = NULL}; 
+   coap_string_t payload = { .length =0 , .s = NULL}; 
+/* discover registrar */
+  query.s = (uint8_t *)discover_rt;
+  query.length = strlen(discover_rt);
+  set_message_type(client, COAP_MESSAGE_NON);
+  set_query(client, &query);
+  char wk[] = ".well-known/core";
+  path.s = (uint8_t *)wk;
+  path.length = strlen(wk);
+  set_discovery_wanted();
+  set_host( client, MC_coap);       /* discovery address */
+  set_path( client, &path);
+  set_payload( client, &payload);
+  set_method( client, COAP_REQUEST_GET);
+  set_scheme( client, COAP_URI_SCHEME_COAP); 
+  session = coap_start_session( client);
+  if (session == NULL){
+	  coap_log(LOG_WARNING," start-session discovery address illegal\n");
+	  return NULL;
+  }
+  uri_options_off( client);
+  if( coap_start_request( client, 0) == 0)
+         return session; 
+  else return NULL;
+}
+  
+  
+static void
+init_switch_resources(coap_context_t *ctx){
+/* initialize of switch server issuer address*/
   struct ifaddrs *ifaddr, *ifa;
   int family, s;
   if (getifaddrs(&ifaddr) != -1) {
@@ -907,62 +1687,28 @@ switch_init_resources(coap_context_t *ctx) {
 				  if (ch == '%') lan_att = 1;
 			  }
 			  if (lan_att == 0){
-				char prefix[] = "coap://[";
-				uint8_t pre_len = strlen(prefix);
-				uint8_t ep_len = strlen(prefix) + strlen(host) +1;
-			    struct ocf_ep_t *ep = malloc(sizeof(struct ocf_ep_t));
-			    ep->ep.length = ep_len;
-			    ep->ep.s = coap_malloc(ep_len + 1);
-			    memcpy(ep->ep.s, prefix, pre_len);
-			    memcpy(ep->ep.s + pre_len, host, strlen(host));
-			    ep->ep.s[ep_len-1] = ']';
-			    ep->ep.s[ep_len] = 0;
-			    char wlan0[] = "wlan0";
-				if (strcmp(wlan0, ifa->ifa_name)  == 0){
+				uint8_t ep_len = strlen(host);
+				char wlan0[] = "wlan0";
+				char wifi0[] = "wifi0";
+				if ((strcmp(wlan0, ifa->ifa_name) == 0) ||
+				     (strcmp(wifi0, ifa->ifa_name) == 0)) {
 			      IP_SW.s = malloc(ep_len+1);
 			      IP_SW.length = ep_len;
-			      memcpy(IP_SW.s, ep->ep.s, ep->ep.length);
+			      memcpy(IP_SW.s, host, strlen(host));
+			      IP_SW.s[ep_len] = 0;
 			    }
-		        ep->next = ocf_eps;
-		        ocf_eps = ep;
-		        ocf_ep_nr++;
 		      }  /* lan_att */
 	        }  /* s==0 */
 		  } /* ifa->if_addr */
           ifa = ifa->ifa_next;
 	 } /* while */        
   } /* getifaddrs  */
-  freeifaddrs( ifaddr);
-  
-  char uu_pre[] = "uu_SW";
-  SW_identifier.length = 11;
-  SW_identifier.s = coap_malloc(SW_identifier.length);
-  memcpy(SW_identifier.s, uu_pre, 5);
-  cr_namenr(SW_identifier.s + 5);
-  
-  
+  freeifaddrs( ifaddr);		
+	
 /* initialize the resource paths */
   coap_resource_t *  r = coap_resource_init(NULL, 0);
   
-r = coap_resource_init(coap_make_str_const("oic/authz-info"), resource_flags);
-  coap_register_handler(r, COAP_REQUEST_POST, switch_hnd_post_authz);
-  coap_add_attr(r, coap_make_str_const("ct"), coap_make_str_const("60"), 0);
-  coap_add_attr(r, coap_make_str_const("title"), coap_make_str_const("\"Authorize switch access\""), 0);
-  coap_add_attr(r, coap_make_str_const("rt"), coap_make_str_const("\"oic.d.switch\""), 0);
-  coap_add_attr(r, coap_make_str_const("if"), coap_make_str_const("\"ocf switch device\""), 0);
-
-  coap_add_resource(ctx, r);
-  
-r = coap_resource_init(coap_make_str_const("oic/boot"), resource_flags);
-  coap_register_handler(r, COAP_REQUEST_POST, ocf_hnd_post_boot); 
-  coap_add_attr(r, coap_make_str_const("ct"), coap_make_str_const("60"), 0);
-  coap_add_attr(r, coap_make_str_const("title"), coap_make_str_const("\"boot switch\""), 0);
-  coap_add_attr(r, coap_make_str_const("rt"), coap_make_str_const("\"oic.d.switch\""), 0);
-  coap_add_attr(r, coap_make_str_const("if"), coap_make_str_const("\"ocf boot device\""), 0);
-
-  coap_add_resource(ctx, r);
-  
-r = coap_resource_init(coap_make_str_const("oic/onoff"), resource_flags);
+  r = coap_resource_init(coap_make_str_const("oic/onoff"), resource_flags);
   coap_register_handler(r, COAP_REQUEST_GET, ocf_hnd_get_switch);
    coap_register_handler(r, COAP_REQUEST_POST, ocf_hnd_post_switch); 
   coap_add_attr(r, coap_make_str_const("ct"), coap_make_str_const("60"), 0);
@@ -1002,4 +1748,609 @@ r = coap_resource_init(coap_make_str_const("oic/onoff"), resource_flags);
   coap_add_resource(ctx, r);
 }
 
+static void
+init_resources(coap_context_t *ctx) {
+  coap_resource_t *r;
+  int resource_flags = 0;
+  r = coap_resource_init(NULL, 0);
+  coap_register_handler(r, COAP_REQUEST_GET, hnd_get_index);
+
+  coap_add_attr(r, coap_make_str_const("ct"), coap_make_str_const("0"), 0);
+  coap_add_attr(r, coap_make_str_const("title"), coap_make_str_const("\"General Info\""), 0);
+  coap_add_resource(ctx, r);
+
+  /* store clock base to use in /time */
+  my_clock_base = clock_offset;
+
+  r = coap_resource_init(coap_make_str_const("time"), resource_flags);
+  coap_register_handler(r, COAP_REQUEST_GET, hnd_get_time);
+  coap_register_handler(r, COAP_REQUEST_PUT, hnd_put_time);
+  coap_register_handler(r, COAP_REQUEST_DELETE, hnd_delete_time);
+  coap_resource_set_get_observable(r, 1);
+
+  coap_add_attr(r, coap_make_str_const("ct"), coap_make_str_const("0"), 0);
+  coap_add_attr(r, coap_make_str_const("title"), coap_make_str_const("\"Internal Clock\""), 0);
+  coap_add_attr(r, coap_make_str_const("rt"), coap_make_str_const("\"ticks\""), 0);
+  coap_add_attr(r, coap_make_str_const("if"), coap_make_str_const("\"clock\""), 0);
+
+  coap_add_resource(ctx, r);
+  time_resource = r;
+
+  if (support_dynamic > 0) {
+    /* Create a resource to handle PUTs to unknown URIs */
+    r = coap_resource_unknown_init(hnd_unknown_put);
+    coap_add_resource(ctx, r);
+  }
+#ifndef WITHOUT_ASYNC
+  r = coap_resource_init(coap_make_str_const("async"), 0);
+  coap_register_handler(r, COAP_REQUEST_GET, hnd_get_async);
+
+  coap_add_attr(r, coap_make_str_const("ct"), coap_make_str_const("0"), 0);
+  coap_add_resource(ctx, r);
+#endif /* WITHOUT_ASYNC */
+}
+
+static int
+verify_cn_callback(const char *cn,
+                   const uint8_t *asn1_public_cert,
+                   size_t asn1_length,
+                   coap_session_t *session UNUSED_PARAM,
+                   unsigned depth,
+                   int validated UNUSED_PARAM,
+                   void *arg UNUSED_PARAM
+) {
+	char file_cert[]     = PLEDGE_SERVER_DER;
+	char file_ca[]       = PLEDGE_SERVER_CA_DER;
+	char *out_file       = NULL;
+    coap_log(LOG_INFO, "CN '%s' presented by server (%s) depth is %d\n",
+           cn, depth ? "CA" : "Certificate", depth);
+    if (depth == 0) out_file = file_cert;
+    else            out_file = file_ca;
+	coap_log(LOG_INFO," certificate to be written to %s \n", out_file);
+    coap_string_t contents;
+    coap_str_const_t constnm = {.length = asn1_length, .s = asn1_public_cert};
+    memcpy(&contents, &constnm, sizeof(contents));  /* to avoid compilation warning */
+    uint8_t ok = write_file_mem(out_file, &contents);  
+    coap_free(contents.s);
+    if (ok != 0)coap_log(LOG_ERR, "certificate is not written to %s \n", PLEDGE_SERVER_DER);         
+    return 0;
+}
+
+
+static void
+usage( const char *program, const char *version) {
+  const char *p;
+  char buffer[64];
+
+  p = strrchr( program, '/' );
+  if ( p )
+    program = ++p;
+
+  fprintf( stderr, "%s v%s -- a small CoAP server implementation\n"
+     "(c) 2010,2011,2015-2020 Olaf Bergmann <bergmann@tzi.org> and others\n\n"
+     "%s\n\n"
+     "Usage: %s [-d max] [-b [num,]size] [-v num] [-p port] [-J] [-R] [registrar address]\n"
+     "General Options\n"
+     "\t-b [num,]size\tBlock size to be used in GET/PUT/POST requests\n"
+     "\t       \t\t(value must be a multiple of 16 not larger than 1024)\n"
+     "\t       \t\tIf num is present, the request chain will start at\n"
+     "\t       \t\tblock num\n"     
+     "\t-d max \t\tAllow dynamic creation of up to a total of max\n"
+     "\t       \t\tresources. If max is reached, a 4.06 code is returned\n"
+     "\t       \t\tuntil one of the dynamic resources has been deleted\n"
+     "\t-l loss%%\tRandomly fail to send datagrams with the specified\n"
+     "\t       \t\tprobability - 100%% all datagrams, 0%% no datagrams\n"
+     "\t       \t\t(for debugging only)\n"
+     "\t-v num \t\tVerbosity level (default 3, maximum is 9). Above 7,\n"
+     "\t       \t\tthere is increased verbosity in GnuTLS and OpenSSL logging\n"
+     "\t-J     \t\tJSON is used replacing CBOR using media-type application/voucher-cms+json\n"
+     "\t-p port\t\tPort of the coap device server\n"
+     "\t       \t\tPort+1 is used for coaps device server \n"
+     "\t       \t\tPort+2 is used for the coap Join_proxy port \n"
+     "\t       \t\tif not specified, default coap/coaps server ports are used \n"
+     "\t-h     \t\tHelp displays this message \n"     
+     "\texamples:\t  %s \n"
+     "\t       \t\t  %s coaps://localhost:5664 \n"
+    , program, version, coap_string_tls_version(buffer, sizeof(buffer)),
+    program, program, program);
+}
+
+
+/* pledge_get context
+ * sets client and server contexts into client and server
+ * OK: returns 0; else returns 1 
+ */
+int
+pledge_get_contexts(client_request_t *client, client_request_t *server, const char *node, const char *port) {
+  coap_context_t *ctx_s = NULL;
+  coap_context_t *ctx_c = NULL;
+  coap_endpoint_t *ep_udp = NULL;
+  coap_endpoint_t *ep_dtls = NULL;       
+  int s;
+  struct addrinfo hints;
+  struct addrinfo *result, *rp;
+
+  ctx_c = coap_new_context(NULL);
+  if (!ctx_c) {
+    return 1;
+  }
+  client->ctx = ctx_c;
+
+  /* Need PSK set up before we set up (D)TLS endpoints */
+  set_pki_callback( client, verify_cn_callback);  /* set the call back   */
+  fill_keystore( client);
+  memset(&hints, 0, sizeof(struct addrinfo));
+  hints.ai_family = AF_UNSPEC;    /* Allow IPv4 or IPv6 */
+  hints.ai_socktype = SOCK_DGRAM; /* Coap uses UDP */
+  hints.ai_flags = AI_PASSIVE | AI_NUMERICHOST;
+
+  s = getaddrinfo(node, port, &hints, &result);
+  if ( s != 0 ) {
+    fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(s));
+    coap_free_context(ctx_c);
+    return 1;
+  }
+  /* different context for server executions */
+  ctx_s = coap_new_context(NULL);
+  if (!ctx_s) {
+    return 1;
+  }
+  server->ctx = ctx_s;
+  set_pki_callback( server, verify_cn_callback);  /* set the call back   */
+  fill_keystore( server);
+  /* iterate through results until success */
+  for (rp = result; rp != NULL; rp = rp->ai_next) {
+    coap_address_t addr, addrs;
+    if (rp->ai_addrlen <= sizeof(addr.addr)) {
+      coap_address_init(&addr);
+      addr.size = (socklen_t)rp->ai_addrlen;
+      memcpy(&addr.addr, rp->ai_addr, rp->ai_addrlen);
+      addrs = addr;
+      if (addr.addr.sa.sa_family == AF_INET) {
+        uint16_t temp = ntohs(addr.addr.sin.sin_port) + 1;
+        addrs.addr.sin.sin_port = htons(temp);
+      } else if (addr.addr.sa.sa_family == AF_INET6) {
+        uint16_t temp = ntohs(addr.addr.sin6.sin6_port) + 1;
+        addrs.addr.sin6.sin6_port = htons(temp);
+      } else {
+        goto finish;
+      }
+      ep_udp = coap_new_endpoint(ctx_s, &addr, COAP_PROTO_UDP);
+      if (ep_udp) {
+		init_URIs(&addr, COAP_PROTO_UDP, JP_STANDARD_PORT);
+        if (coap_dtls_is_supported() && (server->cert_file)) {
+          ep_dtls = coap_new_endpoint(ctx_s, &addrs, COAP_PROTO_DTLS);
+          if (!ep_dtls) coap_log(LOG_CRIT, "cannot create DTLS endpoint\n");
+        } /* if coap_dtls  */
+      } else {
+        coap_log(LOG_CRIT, "cannot create UDP endpoint\n");
+        continue;
+      } /* if (!ep_udp) */
+      if (coap_tcp_is_supported()) {
+        coap_endpoint_t *ep_tcp;
+        ep_tcp = coap_new_endpoint(ctx_s, &addr, COAP_PROTO_TCP);
+        if (ep_tcp) {
+          if (coap_tls_is_supported() && (server->cert_file)) {
+            coap_endpoint_t *ep_tls;
+            ep_tls = coap_new_endpoint(ctx_s, &addrs, COAP_PROTO_TLS);
+            if (!ep_tls)
+              coap_log(LOG_CRIT, "cannot create TLS endpoint\n");
+          }
+        } else {
+          coap_log(LOG_CRIT, "cannot create TCP endpoint\n");
+        }
+      }  /* coap_tcp_is_supported */
+      if (ep_udp)
+        goto finish;
+    }
+  }
+  fprintf(stderr, "no context available for interface '%s'\n", node);
+  coap_free_context(ctx_s);
+  coap_free_context(ctx_c);
+  return 1;  
+finish:
+  freeaddrinfo(result);
+  return 0;
+}
+
+static int
+cmdline_blocksize( client_request_t *client, char *arg) {
+  uint16_t size;
+  again:
+  size = 0;
+  while(*arg && *arg != ',')
+    size = size * 10 + (*arg++ - '0');
+
+  if (*arg == ',') {
+    arg++;
+    block.num = size;
+    goto again;
+  }
+  if (size) set_block( client, size);
+
+  return 1;
+}
+
+
+/**
+ * Sets global URI options according to the URI passed as @p arg.
+ * This function returns 0 on success or -1 on error.
+ *
+ * @param arg             The URI string.
+ * @param create_uri_opts Flags that indicate whether Uri-Host and
+ *                        Uri-Port should be suppressed.
+ * @return 0 on success, -1 otherwise
+ */
+static int
+cmdline_uri(client_request_t *client, char *arg, int create_uri_opts) {
+
+  coap_uri_t uri;
+  uri.scheme = COAP_URI_SCHEME_COAP;
+  uri.port = COAP_DEFAULT_PORT;
+  if (strlen(arg) > 1){
+    if (coap_split_uri((unsigned char *)arg, strlen(arg), &uri) < 0) {
+      coap_log(LOG_ERR, "invalid CoAP URI\n");
+      return -1;
+    }
+    if (uri.scheme==COAP_URI_SCHEME_COAPS && !RELIABLE && !coap_dtls_is_supported()) {
+      coap_log(LOG_EMERG,
+               "coaps URI scheme not supported in this version of libcoap\n");
+      return -1;
+    }
+
+    if ((uri.scheme==COAP_URI_SCHEME_COAPS_TCP || (uri.scheme==COAP_URI_SCHEME_COAPS && RELIABLE)) && !coap_tls_is_supported()) {
+      coap_log(LOG_EMERG,
+            "coaps+tcp URI scheme not supported in this version of libcoap\n");
+      return -1;
+    }
+
+    if (uri.scheme==COAP_URI_SCHEME_COAP_TCP && !coap_tcp_is_supported()) {
+      /* coaps+tcp caught above */
+      coap_log(LOG_EMERG,
+            "coap+tcp URI scheme not supported in this version of libcoap\n");
+      return -1;
+    } /* if uri.scheme  */
+  }  /* if strlen(arg)  */
+  set_scheme( client, uri.scheme); 
+  coap_string_t *tmp = (coap_string_t *) &(uri.host); /* uri.host is const */
+  set_host( client, tmp);
+  tmp = (coap_string_t *) &(uri.path); /* uri.path is const */
+  set_path( client, tmp);
+  set_port( client, uri.port);
+
+  return 0;
+}
+
+/* define pledge states to switch */
+typedef enum {START, DISCOVERED, CONNECTED, RV_DONE, VS_DONE, CERTIFIED, ATTRIBUTES, ENROLLED, SWITCH, END_STATE} pledge_state_t;
+
+int
+ocf_switch(int argc, char **argv) {
+const char *state_names[] = { "START", "DISCOVERED", "CONNECTED", "RV_DONE", "VS_DONE",
+	                          "CERTIFIED", "ATTRIBUTES", "ENROLLED", "SWITCH", "END_state"};
+  client_request_t *client = NULL;
+  client_request_t *server = NULL;
+  char *group6 = NULL;
+  char *group4 = NULL;
+  coap_tick_t now;
+  char addr_str[NI_MAXHOST] = "::";
+  char port_str[NI_MAXSERV] = COAP_PORT;
+  int opt;
+  coap_log_t log_level = LOG_WARNING;
+  unsigned wait_ms;
+  coap_time_t t_last = 0;
+  int coap_fd;
+  fd_set m_readfds;
+  int nfds = 0; 
+
+#ifndef _WIN32
+  struct sigaction sa;
+#endif
+  client = client_request_init();
+  server = client_request_init();
+  clock_offset = time(NULL);
+  set_JSON(JSON_OFF); /* can be set on with -J option */  
+
+  while ((opt = getopt(argc, argv, "Jd:p:b:l:v:h:")) != -1) {
+    switch (opt) {
+    case 'b':
+      cmdline_blocksize( client, optarg);
+      break;
+    case 'd' :
+      support_dynamic = atoi(optarg);
+      break;
+    case 'l':
+      if (!coap_debug_set_packet_loss(optarg)) {
+        usage(argv[0], LIBCOAP_PACKAGE_VERSION);
+        exit(1);
+      }
+      break;
+    case 'p' :
+      strncpy(port_str, optarg, NI_MAXSERV-1);
+      port_str[NI_MAXSERV - 1] = '\0';
+      break;
+    case 'v' :
+      log_level = strtol(optarg, NULL, 10);
+      break;
+    case 'J' :
+      set_JSON(JSON_ON);
+      break;
+    case 'h' :           
+    default:
+      usage( argv[0], LIBCOAP_PACKAGE_VERSION );
+      exit( 1 );
+    }
+  }
+
+  coap_startup();
+  coap_dtls_set_log_level(log_level);
+  coap_set_log_level(log_level);
+  /* all coap_local_nodes is used for discovery *
+   * unless addres is specified in command line  */
+  coap_string_t *regis_host = coap_malloc(sizeof(coap_string_t)); /* registrar host address */
+  memset(regis_host, 0, sizeof(coap_string_t));
+  coap_string_t  *tmp_host; /* holds address in client->host */
+  coap_session_t *discover_session = NULL;
+  /* default registrar discovery  */
+  discover_rt     = regis_discover;
+  discover_choice = regis_discover;
+  uint16_t regis_port = 0;          /* registrar port */
+  char acln[] = ALL_COAP_LOCAL_IPV4_NODES;
+  coap_string_t MC_coap = {.s = (uint8_t *)acln,.length = strlen(acln)};
+  set_message_type( client, COAP_MESSAGE_NON);
+  if (optind < argc) {
+     if (cmdline_uri(client, argv[optind], CREATE_URI_OPTS) < 0) {
+       usage( argv[0], LIBCOAP_PACKAGE_VERSION );
+       exit(1);
+     }
+     tmp_host = get_host( client);
+     regis_host->s = coap_malloc(tmp_host->length);
+     regis_host->length = tmp_host->length;
+     memcpy(regis_host->s , tmp_host->s, tmp_host->length);
+     regis_port = get_port( client);
+     if (regis_host != NULL){
+		   if (regis_host->s != NULL && regis_host->length != 0){
+			   MC_coap.s = malloc(regis_host->length);
+			   memcpy(MC_coap.s, regis_host->s, regis_host->length);
+			   MC_coap.length = regis_host->length;
+		   }
+	 }     
+  }  /*  regis_host contains address from command line  */
+     /*  regis_port contains port from command line     */
+  set_certificates(client, int_cert_file, int_ca_file); /* set certificate files */ 
+  set_certificates(server, int_cert_file, int_ca_file); /* set certificate files */ 
+  int ok = pledge_get_contexts(client, server, addr_str, port_str);
+  if (ok == 1) return -1;
+
+ /* server joins MC address: all link-local coap nodes */ 
+  char all_ipv6_coap_ll[] = ALL_COAP_LOCAL_IPV6_NODES;
+  char all_ipv4_coap_ll[] = ALL_COAP_LOCAL_IPV4_NODES;
+  group6 = all_ipv6_coap_ll;
+  group4 = all_ipv4_coap_ll;
+  if (group6){
+    if (coap_join_mcast_group(server->ctx, group6) == 0)
+          coap_log(LOG_INFO," joint mulicast group with address: %s \n", group6);
+  }
+  if (group4){
+    if (coap_join_mcast_group(server->ctx, group4) == 0)
+          coap_log(LOG_INFO," joint mulicast group with address: %s \n", group4);
+  }
+  init_resources( server->ctx);
+  /* force epoll not supported */
+     coap_fd = -1;
+     
+     if (coap_fd != -1) {
+       /* if coap_fd is -1, then epoll is not supported within libcoap */
+       FD_ZERO(&m_readfds);
+       FD_SET(coap_fd, &m_readfds);
+       nfds = coap_fd + 1;
+  }
+#ifdef _WIN32
+  signal(SIGINT, handle_sigint);
+#else
+  memset (&sa, 0, sizeof(sa));
+  sigemptyset(&sa.sa_mask);
+  sa.sa_handler = handle_sigint;
+  sa.sa_flags = 0;
+  sigaction (SIGINT, &sa, NULL);
+  sigaction (SIGTERM, &sa, NULL);
+  /* So we do not exit on a SIGPIPE */
+  sa.sa_handler = SIG_IGN;
+  sigaction (SIGPIPE, &sa, NULL);
+#endif
+
+  wait_ms = COAP_RESOURCE_CHECK_TIME * 1000;
+
+  pledge_state_t pledge_state = START; 
+  uint8_t        step = 1;               /* increase pledge_state with step */
+  if (regis_host->s == NULL){ /* registrar address and port are not set in command line, so discover with MC */
+    discover_session = discover_node( client, &MC_coap); 
+  } else { /* set client host and port from regis_host and regis_port  */
+    coap_string_t new_host;
+    new_host.length = regis_host->length;
+    new_host.s = coap_malloc(regis_host->length);
+    memcpy(new_host.s, regis_host->s, regis_host->length); /* const pointer */
+    set_host( client, &new_host);
+    set_port( client, regis_port);
+    coap_free(new_host.s);
+    pledge_state = DISCOVERED;    /*  registrar has been set  in command line, no discovery  */
+    make_ready();
+  }
+
+  int NOK_cnt  = 0;  /* number of times that ok == 1 */
+  int TO_cnt   = 0;  /* number of times that brski request execution timed out */
+  int BRSKI_cnt = 0;  /* number of times that BRSKI enrollment took place */
+  while ( !quit ) {
+    int result = 20;
+    int8_t ok = 0;
+    if (is_ready()){ /* remote action is done */
+      fprintf(stderr,"Brski count: %06d,   TO count: %02d,    NOK count: %02d,    malloc_count  %03d,   PLEDGE_state is %s\n", 
+                          BRSKI_cnt, TO_cnt, NOK_cnt, (int)coap_nr_of_alloc(), state_names[pledge_state]);
+	   switch (pledge_state) {
+		   case START:
+		     ok = verify_discovery( client);
+		     coap_session_release(discover_session);
+             /* set regis_port and regis_host from discovered client host and port */
+             tmp_host = get_host( client);
+             regis_host->s = coap_malloc(tmp_host->length);
+             regis_host->length = tmp_host->length;
+             memcpy(regis_host->s , tmp_host->s, tmp_host->length);             
+             regis_port = get_port(client);	
+		     if (ok != 0){     /* a registrar is not discovered */
+               set_port( client, COAPS_DEFAULT_PORT);               /* coaps port for DTLS, coap port for edhoc */
+		     }
+             pledge_state++;
+		   case DISCOVERED:
+		     BRSKI_cnt++;
+		     client_active = CLIENT_ACTIVE;
+		     coap_string_t query   = {.length = 0, .s = NULL};
+             set_query(client, &query);   /* remove rt=XXXXX  */
+             ok = pledge_connect_pledge( client); /* make DTLS connection */
+             pledge_state = pledge_state + step;
+		   case CONNECTED:
+		     ok = pledge_voucher_request( client);
+		     break;
+		   case RV_DONE:
+		     ok = pledge_arrived(masa_code, &masa_voucher);
+		     if (ok == 0){
+				 ok = pledge_status_voucher( client);
+			 }
+		     break;
+		   case VS_DONE:
+		     ok = pledge_arrived(audit_code, &registrar_audit);
+		   	 if (ok == 0){
+				 ok = pledge_get_certificate( client);
+			 } else if (audit_code>>5 == 2)ok = pledge_get_certificate( client); // empty audit is possible
+		   	 break;		       
+		   case CERTIFIED:
+		     ok = pledge_arrived(cert_code, &registrar_cert);
+		     if (ok == 0){
+				 ok = pledge_get_attributes( client);
+			 }
+		     break;
+		   case ATTRIBUTES:
+		     if (cert_code >> 5 == 2)ok = pledge_enroll_certificate( client);
+		     break;
+		   case ENROLLED:
+		     ok = pledge_arrived(cert_code, &registrar_cert);	   
+             if (ok == 0) ok = store_enrolled();                   
+		   case SWITCH:	
+		     pledge_state = pledge_state + step;
+             /* set switch resources */
+             init_switch_resources(server->ctx);
+             ok = add_to_home( client);
+		     break;
+		   case END_STATE:
+		     client_active = CLIENT_INACTIVE;
+		     fprintf(stderr,"switch is registered \n");
+		     coap_session_release(client->session);  /* close the DTLS session with Registrar */  
+		     /* fill in server certificates with enrolled certificates  */
+		     char trust_ca_file[]   = PLEDGE_TRUST;
+		     char trust_comb_file[] = PLEDGE_ENROLL_COMB;
+		     set_certificates(server, trust_comb_file, trust_ca_file); /* set certificate files */      
+		     set_certificates(client, trust_comb_file, trust_ca_file); /* set certificate files */      
+		     break;
+		   default:
+		     ok = 1;
+		     client_active = CLIENT_ACTIVE;
+		     break;
+	   }  /* switch */
+	   if (ok == 0) pledge_state = pledge_state + step;
+	   else {
+		   NOK_cnt++;
+		   ok = 0;
+		   pledge_state = START; /* something went wrong; start again */
+		   client_active = CLIENT_ACTIVE;
+	   }
+	   ok =0;
+	   reset_ready();
+    }  /* if is_ready */
+
+    if (coap_fd != -1) {
+      /*
+       * Using epoll.  It is more usual to call coap_io_process() with wait_ms
+       * (as in the non-epoll branch), but doing it this way gives the
+       * flexibility of potentially working with other file descriptors that
+       * are not a part of libcoap.
+       */
+       fprintf(stderr,"using e_poll\n");
+      fd_set readfds = m_readfds;
+      struct timeval tv;
+      coap_tick_t begin, end;
+
+      coap_ticks(&begin);
+
+      tv.tv_sec = wait_ms / 1000;
+      tv.tv_usec = (wait_ms % 1000) * 1000;
+      /* Wait until any i/o takes place or timeout */
+      result = select (nfds, &readfds, NULL, NULL, &tv);
+      if (result == -1) {
+        if (errno != EAGAIN) {
+          coap_log(LOG_DEBUG, "select: %s (%d)\n", coap_socket_strerror(), errno);
+          break;
+        }
+      }
+      if (result > 0) {
+        if (FD_ISSET(coap_fd, &readfds)) {
+          result = coap_io_process(client->ctx, COAP_IO_NO_WAIT);
+        }
+      }
+      if (result >= 0) {
+        coap_ticks(&end);
+        /* Track the overall time spent in select() and coap_io_process() */
+        result = (int)(end - begin);
+      }
+    }
+    else {
+      /*
+       * epoll is not supported within libcoap
+       *
+       * result is time spent in coap_io_process()
+       */
+      if (client_active == CLIENT_INACTIVE) 
+           result = coap_io_process( server->ctx, wait_ms);
+      else                                  
+          result = coap_io_process( client->ctx, wait_ms);
+    }
+    if ( result < 0 ) {
+      break;
+    } else if ( result && (unsigned)result < wait_ms ) {
+      /* decrement if there is a result wait time returned */
+      wait_ms -= result;
+    } else {
+      /*
+       * result == 0, or result >= wait_ms
+       * (wait_ms could have decremented to a small value, below
+       * the granularity of the timer in coap_io_process() and hence
+       * result == 0)
+       */
+      wait_ms = COAP_RESOURCE_CHECK_TIME * 1000;
+    }
+    if (time_resource) {
+      coap_time_t t_now;
+      unsigned int next_sec_ms;
+
+      coap_ticks(&now);
+      t_now = coap_ticks_to_rt(now);
+      if (t_last != t_now) {
+        /* Happens once per second */
+        t_last = t_now;
+        coap_resource_notify_observers(time_resource, NULL);
+      }
+      /* need to wait until next second starts if wait_ms is too large */
+      next_sec_ms = 1000 - (now % COAP_TICKS_PER_SECOND) *
+                           1000 / COAP_TICKS_PER_SECOND;
+      if (next_sec_ms && next_sec_ms < wait_ms)
+        wait_ms = next_sec_ms;
+    }
+
+#ifndef WITHOUT_ASYNC
+    /* check if we have to send asynchronous responses */
+    coap_ticks( &now );
+    check_async(client->ctx, now);
+#endif /* WITHOUT_ASYNC */
+  }
+  Clean_client_request();
+  return 0;
+}
 
