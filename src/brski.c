@@ -1335,22 +1335,24 @@ brski_json_voucherstatus(coap_string_t *status){
 int8_t
 brski_cbor_voucherstatus(coap_string_t *status){	
 	if (status == NULL)return 1;
+	#define STATUS_VERSION     1
+	int cnt = 0;
 	uint8_t tmp_buf[500];
 	uint8_t *buf = tmp_buf;
-	char One[] = "1";
 	char text[] = "Informative human readable message";
 	char additional[] = "Additional information";
 	uint8_t nr = 0;
 	nr += cbor_put_map(&buf, 4);
 	nr += cbor_put_text(&buf, sts_version, strlen(sts_version));
-	nr += cbor_put_text(&buf, One, strlen(One));
+	nr += cbor_put_number(&buf, STATUS_VERSION);
 	nr += cbor_put_text(&buf, sts_Status, strlen(sts_Status));
-	nr += cbor_put_number(&buf, VS_SUCCESS);
+	nr += cbor_put_simple_value(&buf, CBOR_TRUE);
 	nr += cbor_put_text(&buf, sts_Reason, strlen(sts_Reason));	
 	nr += cbor_put_text(&buf, text, strlen(text));	
 	nr += cbor_put_text(&buf, sts_context, strlen(sts_context));
 	nr += cbor_put_map(&buf, 1);
-	nr += cbor_put_number(&buf, 0);
+	nr += cbor_put_number(&buf, cnt);
+	cnt++;
 	nr += cbor_put_text(&buf, additional, strlen(additional));
 	status->length = nr;
 	status->s = coap_malloc(nr);
@@ -3192,8 +3194,8 @@ brski_cbor_readstatus(coap_string_t *log, status_t *status){
 	if (log == NULL)return 1;
 	if (log->s == NULL) return 1;
 	if (status == NULL) return 1;
-	char One[] = "1";
 	int64_t  mm = 0;
+	uint8_t  sv =0;
 	uint8_t  *data = log->s;
 	int8_t   ok = 0;
 	uint8_t  *end_data = data + log->length;
@@ -3213,18 +3215,17 @@ brski_cbor_readstatus(coap_string_t *log, status_t *status){
             case STS_VERSION:
               ok = cbor_elem_contained(data, end_data);
               if (ok == 1) goto error;
-              ok = cbor_get_string_array(&data, &result, &result_len);
+              ok = cbor_get_number(&data, &mm);
               if (ok == 0){
-                 if (strncmp(One, (char *)result, result_len) != 0){
+                 if (mm != 1){
 				    /* wrong version   */
 				    conclusion = VOUCHER_REJECTED;
-				}  /* if strncmp */
+				}  /* if mm */
 			  }  /* if ok  */
-			  coap_free(result);
               break;
             case STS_STATUS:
-              ok = cbor_get_number(&data, &mm);
-              if (mm != VS_SUCCESS){
+              ok = cbor_get_simple_value(&data, &sv);
+              if (sv != CBOR_TRUE){
 				  conclusion = VOUCHER_REJECTED;
 			  }
               break;
