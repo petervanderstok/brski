@@ -1009,7 +1009,7 @@ pledge_enroll_certificate(client_request_t *client){
   if (result == 0){
     if (payload.length > 0){
 	    set_payload( client, &payload);
-	    result = coap_start_request(client, COAP_MEDIATYPE_APPLICATION_CBOR); 
+	    result = coap_start_request(client, COAP_MEDIATYPE_APPLICATION_PKCS10); 
         coap_free(payload.s);
         payload.s = NULL;
     }  /* if payload.length  */
