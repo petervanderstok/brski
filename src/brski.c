@@ -253,9 +253,8 @@ find_sid(coap_string_t *text,uint8_t type){
 
 #define DFL_NOT_BEFORE          "20010101000000"
 #define DFL_NOT_AFTER           "20301231235959"
-#define ISSUER_NAME             "CN=registrar.vanderstok.tech,O=vanderstok,OU=home,L=Helmond,C=NL";
-#define SUBJECT_NAME            "CN=registrar.vanderstok.tech,O=vanderstok,OU=home_ops,L=Helmond,C=NL";
-#define SERIAL_NUMBER_FILE      "./certificates/brski/serial"
+#define CERTIFICATE_SERIAL_NUMBER_FILE      "./certificates/brski/serial_cert.txt"
+#define DEVICE_SERIAL_NUMBER_FILE           "./certificates/brski/device_cert.txt"
 
 /* filter_time
  * filters YYYYMMDDhhmmss form date and store intp filter
@@ -280,10 +279,9 @@ filter_time(char *date, char *filter){
  * returns certificate serial number 
  */
 static char *
-read_serial(){
+read_serial(char * serial_file){
 #define BN_LEN      64
   size_t length = 0;
-  char serial_file[] = SERIAL_NUMBER_FILE;
   uint8_t *buf = read_file_mem(serial_file, &length);
   if (buf == NULL) return NULL;
   length = length -1;
@@ -312,6 +310,26 @@ read_serial(){
   write_file_mem(serial_file, &contents);
   return (char *)buf;
 }
+
+/* 
+ * read-serial_certificate
+ * returns certificate serial number 
+ */
+static char *
+read_serial_certificate(void){
+      char serial_file[] = CERTIFICATE_SERIAL_NUMBER_FILE;
+      return read_serial(serial_file);
+} 
+     
+/* 
+ * read-serial_device
+ * returns certificate serial number 
+ */
+static char *
+read_serial_device(void){
+      char serial_file[] = DEVICE_SERIAL_NUMBER_FILE;
+      return read_serial(serial_file);
+}      
 
 /*
  * brski_combine_cert_key
@@ -434,7 +452,6 @@ exit:
  * uses secp256r1
  * returns 0 => Ok; else returns 1
  */
-
 int8_t
 brski_create_key( char *key_filename)
 {
@@ -544,19 +561,84 @@ exit:
     return( ok);
 }
 
-#define     DATE_SIZE    100
+#define DATE_SIZE                  100
+#define SUBJECT_PLEDGE_START       "CN=uuid:"
+#define SUBJECT_PLEDGE_END         ",O=device,OU=home,C=NL,serialNumber="
+#define SUBJECT_REGISTRAR_CA       "CN=registrar.vanderstok.tech,O=CA-certificate,OU=home_ops,C=NL";
+#define SUBJECT_REGISTRAR_CERT     "CN=registrar.vanderstok.tech,O=Registrar,OU=home,C=NL";
+#define SUBJECT_MASA_CA            "CN=masa.vanderstok.tech,O=CA-certificate,OU=home_ops,C=NL";
+#define SUBJECT_MASA_CERT          "CN=masa.vanderstok.tech,O=Registrar,OU=home,C=NL";
+
+char *
+Create_subject( certificate_state_t cert_st, int is_ca){
+    char subject_start[]          = SUBJECT_PLEDGE_START;
+    char subject_end[]            = SUBJECT_PLEDGE_END;
+    char subject_registrar_cert[] = SUBJECT_REGISTRAR_CERT;
+    char subject_registrar_ca[]   = SUBJECT_REGISTRAR_CA;
+    char subject_masa_cert[]      = SUBJECT_MASA_CERT;
+    char subject_masa_ca[]        = SUBJECT_MASA_CA;   
+    char *subject_string = NULL;
+    int offset = 0;
+    size_t sub_len = 0;
+    char *serial_dv = read_serial_device();
+    // create subject string
+    switch (cert_st){
+	case PLEDGE:
+           offset = 0;
+           sub_len = 2*strlen(serial_dv) + strlen(subject_start) + strlen(subject_end)+1;
+           subject_string = coap_malloc(sub_len);
+           memcpy(subject_string +offset,subject_start,strlen(subject_start));
+           offset = offset + strlen(subject_start);
+           memcpy(subject_string +offset,serial_dv,strlen(serial_dv));
+           offset = offset + strlen(serial_dv); 
+           memcpy(subject_string +offset,subject_end,strlen(subject_end));
+           offset = offset + strlen(subject_end);    
+           memcpy(subject_string +offset,serial_dv,strlen(serial_dv));
+           subject_string[sub_len] = 0;  // string termination
+	   break;
+        case REGISTRAR:
+	   if (is_ca == CREATE_CA){
+	        sub_len = strlen( subject_registrar_ca);
+	        subject_string = coap_malloc(sub_len);
+		memcpy(subject_string, subject_registrar_ca, sub_len);
+	   } else {
+		sub_len = strlen( subject_registrar_cert);
+	        subject_string = coap_malloc(sub_len);
+		memcpy(subject_string, subject_registrar_cert, sub_len);
+	   }
+	   break;
+	case MASA:
+	   if (is_ca == CREATE_CA){
+	        sub_len = strlen( subject_masa_ca);
+	        subject_string = coap_malloc(sub_len);
+		memcpy(subject_string, subject_masa_ca, sub_len);
+	   } else {
+		sub_len = strlen( subject_masa_cert);
+	        subject_string = coap_malloc(sub_len);
+		memcpy(subject_string, subject_masa_cert, sub_len);
+	   }
+	   break;
+	default:
+	   break;
+    }
+    fprintf(stderr,"subject string is %s \n",subject_string);
+    return subject_string;
+}
+
+
 
 /*       
  * create certificate 
- * is_ca = 0: self_signed  certicate
- * is_ca = 1: certificate to be signed by issuer
+ * subject_crt_file == NULL => self_signed  certicate
+ * else => certificate to be signed by issuer
  * returns 0 => Ok
  */
  int8_t
  brski_create_certificate( char *issuer_crt_file,
                               char *subject_crt_file,
                               char *issuer_key_name,
-                              char *subject_key_name)
+                              char *subject_key_name,
+			      certificate_state_t cert_st)
  {
     int ok = 1;  /* failure return values */
     int is_ca = CREATE_CERT;
@@ -573,10 +655,11 @@ exit:
     mbedtls_ctr_drbg_context ctr_drbg;
     const char *pers  = "crt example app";
     const char *issuer_name = NULL;
-    const char *subject_name = NULL;
+    char *subject_name = NULL;
     int version       = 2;
     mbedtls_md_type_t md_alg = MBEDTLS_MD_SHA256;
-    char *serial_nb = NULL;
+    char *serial_ct = NULL;
+    char *serial_dv = NULL;
     char not_before[DATE_SIZE];
     char not_after[DATE_SIZE];
     char tm_temp[DATE_SIZE];
@@ -600,12 +683,12 @@ exit:
     mbedtls_entropy_init( &entropy );
     mbedtls_x509_crt_init( &issuer_crt );
     memset( buf, 0, sizeof(buf) );
-    issuer_name  = ISSUER_NAME;
-    subject_name = SUBJECT_NAME;
     /*
      * read serial number from file and increase
      */
-    serial_nb = read_serial();
+    serial_ct = read_serial_certificate();
+    // create subject string
+    subject_name = Create_subject( cert_st, is_ca);
     /*
      * set start and end dates
      */
@@ -627,7 +710,7 @@ exit:
                                strlen( pers ) ) );
     // Parse hexadecimal serial to MPI
     //
-    CHECK(mbedtls_mpi_read_string( &serial, HEX_RADIX, serial_nb ) );
+    CHECK(mbedtls_mpi_read_string( &serial, HEX_RADIX, serial_ct ) );
     /*
      * 1.1. Load the keys
      */
@@ -649,7 +732,7 @@ exit:
     }		              
     if (is_ca == CREATE_CA){
 /* self sign:  issuer and subject are identical */
-        subject_name = issuer_name;
+        issuer_name = subject_name;
         subject_key = issuer_key;
 	output_file = issuer_crt_file;
     } else output_file = subject_crt_file;
@@ -669,10 +752,11 @@ exit:
 							     max_pathlen ));
     CHECK(mbedtls_x509write_crt_set_subject_key_identifier (&crt));	
     CHECK(mbedtls_x509write_crt_set_authority_key_identifier (&crt));
-    CHECK(mbedtls_x509write_crt_set_key_usage( &crt, key_usage ));   
-     
-/* construct the asn_buf for extended key usage */       
- #define MBEDTLS_OID_REGIS_AUTH                 MBEDTLS_OID_KP "\x1c"
+    CHECK(mbedtls_x509write_crt_set_key_usage( &crt, key_usage ));  
+    
+/* construct the asn_buf for extended key usage in Registrar certificate*/ 
+    if (cert_st == REGISTRAR){      
+#define MBEDTLS_OID_REGIS_AUTH                 MBEDTLS_OID_KP "\x1c"
        uint8_t asn_buf[46];
        memset(asn_buf, 0, sizeof(asn_buf));
        uint8_t *p = asn_buf + sizeof(asn_buf);
@@ -687,6 +771,19 @@ exit:
        size_t asn_len = sizeof(asn_buf) - (size_t)(p - asn_buf);      
        CHECK(mbedtls_x509_set_extension( &crt.extensions, MBEDTLS_OID_EXTENDED_KEY_USAGE, sizeof(MBEDTLS_OID_EXTENDED_KEY_USAGE) - 1,
 				 0 , p, asn_len));
+     }
+/* construct the asn_buf for url extension for pledge certificate */ 
+     if (cert_st == PLEDGE){ 				 
+#define MBEDTLS_OID_REGIS_URL                MBEDTLS_OID_PKIX "\x01"  "\x20"
+       uint8_t asn_buf[46];
+       unsigned char localhost[] = "localhost:4433";
+       memset(asn_buf, 0, sizeof(asn_buf));
+       uint8_t *p = asn_buf + sizeof(asn_buf);
+       CHECK(mbedtls_asn1_write_octet_string( &p, asn_buf, localhost, sizeof(localhost)-1 ));
+       size_t asn_len = sizeof(asn_buf) - (size_t)(p - asn_buf); 
+       CHECK(mbedtls_x509_set_extension( &crt.extensions, MBEDTLS_OID_REGIS_URL, sizeof( MBEDTLS_OID_REGIS_URL ) -1,
+                 0, p, asn_len ));
+    }		 
     /*
      * 1.2. Writing the certificate
      */
@@ -696,7 +793,9 @@ exit:
     ok = 0;
 
 exit:
-    coap_free(serial_nb);
+    coap_free(serial_ct);
+    coap_free(serial_dv);
+    coap_free(subject_name);
     mbedtls_x509_crt_free( &issuer_crt );
     mbedtls_x509write_crt_free( &crt );
     mbedtls_pk_free( subject_key );
@@ -847,16 +946,14 @@ return_subject_sn( mbedtls_x509_name *asn, char **sn, size_t *sn_len){
 }
 
 /* create_certificate
- * create_crt(coap_string_t *return_cert, uint8_t *data, size_t len))
+ * breski_create_crt(coap_string_t *return_cert, uint8_t *data, size_t len))
+ * creates certificate from CSR that is signed with Registrar cert
  * data with length len contains CSR
  * request file is to store pem as temporary CSR file
  * return signed certificate into return_cert 
  * return: OK = 0; NOK =1
  */
-#define MBEDTLS_EXIT_SUCCESS    EXIT_SUCCESS
-#define MBEDTLS_EXIT_FAILURE    EXIT_FAILURE
-
- int8_t
+int8_t
 brski_create_crt(coap_string_t *return_cert, uint8_t *data, size_t len){
 #define CRT_SUBJECT_PWD         NULL
 #define CRT_ISSUER_PWD          "watnietweet"
@@ -925,7 +1022,7 @@ brski_create_crt(coap_string_t *return_cert, uint8_t *data, size_t len){
    /*
     * read serial number from file and increase
     */
-    serial_nb = read_serial();   
+    serial_nb = read_serial_certificate();   
     /*
      * set start and end dates
      */
@@ -2791,7 +2888,7 @@ brski_check_signature(char *cert_file_name, uint8_t *prot_buf, uint8_t *sig_buf,
     fprintf(stderr,"structure to be verified :\n");
     for (uint qq = 0; qq < nr; qq++)fprintf(stderr," %02x",Sig_structure[qq]);
     fprintf(stderr,"\n");
-*/   
+   */
     CHECK(mbedtls_sha256_ret( Sig_structure, nr, hash, 0 ) );
     coap_log(LOG_DEBUG,"brski_check_signature parses cert-file in %s\n",cert_file_name);
     CHECK(mbedtls_x509_crt_parse_file( &crt, cert_file_name)); 

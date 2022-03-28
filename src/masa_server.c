@@ -399,7 +399,7 @@ MS_hnd_post_rv(coap_string_t *signed_voucher_request, uint16_t ct,
 
   coap_string_t voucher = {.s = NULL, .length = 0};
   char mkc[] = MASA_SRV_COMB;
-  char *comb_file = mkc;
+  char *masa_comb_file = mkc;
   if (JSON_set() == JSON_OFF)
             ok = brski_create_cbor_voucher(&voucher, req_contents);
   else  
@@ -410,11 +410,11 @@ MS_hnd_post_rv(coap_string_t *signed_voucher_request, uint16_t ct,
       if (voucher.s != NULL)coap_free(voucher.s);
       return;
   }
-  if (masa_debug > 0)printf("masa signs voucher with key_file %s \n", comb_file);
+  if (masa_debug > 0)printf("masa signs voucher with key_file %s \n", masa_comb_file);
   if (ct == COAP_MEDIATYPE_APPLICATION_VOUCHER_COSE_CBOR)
-     ok = brski_cose_sign_payload(signed_voucher, &voucher, comb_file);
+     ok = brski_cose_sign_payload(signed_voucher, &voucher, masa_comb_file);
   else
-     ok = brski_cms_sign_payload(signed_voucher, &voucher, comb_file);
+     ok = brski_cms_sign_payload(signed_voucher, &voucher, masa_comb_file);
   if (voucher.s != NULL)coap_free(voucher.s);
   fprintf(stderr," post_est_rv server invoked %d  times; all servers invoked %d times, number of open coap_malloc is %d \n", srv_post_rv_cnt, srv_cnt, (int)coap_nr_of_alloc());
   if (ok != 0){
