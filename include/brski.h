@@ -160,7 +160,7 @@
 #define MASA_ED25519_SRV_CRT          "./certificates/brski/intermediate/certs/masa_server_ed25519.crt"
 #define MASA_ED25519_SRV_KEY          "./certificates/brski/intermediate/private/masa_server_ed25519.key"
 #define MASA_ED25519_SRV_COMB         "./certificates/brski/intermediate/certs/masa_server_ed25519-comb.crt"
-
+//
 /* names for EDHOC */
 #define REGIS_ES256_SRV_CRT  REGIS_SRV_CRT
 #define REGIS_ES256_SRV_KEY  REGIS_SRV_KEY
@@ -193,6 +193,8 @@
 
 #define JSON_OFF                 0
 #define JSON_ON                  1
+
+typedef enum {PLEDGE, REGISTRAR, MASA} certificate_state_t;
 
 /* contains results of parsed voucher (-request */
 typedef struct voucher_t{
@@ -270,6 +272,19 @@ remove_audit(audit_t *audit);
 
 void
 remove_status(status_t *status);
+
+int8_t
+brski_create_certificate( char *issuer_crt_file,
+                              char *subject_crt_file,
+                              char *issuer_key_name,
+                              char *subject_key_name,
+                              certificate_state_t cert_st);
+                              
+int8_t
+brski_create_key( char *key_filename);                              
+                              
+int8_t
+brski_combine_cert_key( const char *key_file, const char *cert_file, const char *comb_file);                            
 
 int8_t
 brski_create_crt(coap_string_t *return_cert, uint8_t *data, size_t len);
