@@ -1400,6 +1400,7 @@ void set_MC_wait_loops(client_request_t *client, uint8_t loops){
 void set_certificates(client_request_t *client, char *cert, char *ca){
     client->cert_file    = cert;   /* Combined certificate and private key in PEM */
     client->ca_file      = ca;     /* CA for cert_file - for cert checking in PEM */
+    coap_log(LOG_DEBUG," ca_certificate file is %s,\n    certificate file is %s \n", ca, cert);
 }
 
 void set_pki_callback(client_request_t *client, coap_dtls_cn_callback_t function){
@@ -1569,7 +1570,8 @@ end_coap_client(client_request_t *client){
   coap_cleanup();
   coap_delete_optlist(client->optlist);
   client->optlist = NULL;
-  coap_session_release( client->session );
+  if (client->session != NULL)
+           coap_session_release( client->session );
   if (client->ctx != NULL){
 	  coap_free_context( client->ctx );
   }
