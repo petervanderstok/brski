@@ -621,7 +621,7 @@ Create_subject( certificate_state_t cert_st, int is_ca){
 	default:
 	   break;
     }
-    fprintf(stderr,"subject string is %s \n",subject_string);
+    coap_free(serial_dv);
     return subject_string;
 }
 
@@ -1108,6 +1108,7 @@ brski_create_crt(coap_string_t *return_cert, uint8_t *data, size_t len){
     memcpy(return_cert->s, buf + CRT_BUF_SIZE - ret, ret);
 
 exit:
+    coap_free(serial_nb);
     mbedtls_x509_csr_free( &csr );
     mbedtls_x509_crt_free( &issuer_crt );
     mbedtls_x509write_crt_free( &crt );
@@ -2812,13 +2813,15 @@ brski_create_cbor_masa_request(coap_string_t *masa_request, voucher_t *request, 
     ret = return_subject_sn(&(pledge_crt.subject), &serial, &serial_len);                   
  /* compare serial number of voucher_request with pledge certificate */
     if (serial_len != request->serial_len){
-		coap_free(serial);
-		return 1;
+	        ok = 1;
+		goto exit;
 	}
 	size_t len = regis_request->length + request->cvr_nonce_len + request->serial_len + authority_id.length + 200;
 	ret = memcmp(serial, request->serial, serial_len);
-	    coap_free(serial);
-	if (ret != 0) return 1;
+	if (ret != 0) {
+	    ok = 1;
+	    goto exit;
+	}
 	uint8_t *tmp_buf = coap_malloc(len);
 	uint8_t *buf = tmp_buf;
 	uint16_t nr = 0;
@@ -2847,10 +2850,10 @@ brski_create_cbor_masa_request(coap_string_t *masa_request, voucher_t *request, 
 	masa_request->s = coap_malloc(nr);
 	memcpy(masa_request->s, tmp_buf, nr);
 	coap_free(tmp_buf);
-	coap_free(authority_id.s);
-	mbedtls_x509_crt_free(&pledge_crt); 
-	return 0;
+	ok = 0;
 exit:
+        coap_free(serial);
+        coap_free(authority_id.s);
 	mbedtls_x509_crt_free(&pledge_crt); 
 	return ok;
 }
