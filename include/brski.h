@@ -23,7 +23,7 @@
 #define COAP_MEDIATYPE_APPLICATION_CSRATTRS                 285
 #define COAP_MEDIATYPE_APPLICATION_PKCS10                   286
 #define COAP_MEDIATYPE_APPLICATION_PKIX                     287
-#define COAP_MEDIATYPE_APPLICATION_VOUCHER_CMS_JSON       65503 /* application/voucher-cms+json   */
+#define COAP_MEDIATYPE_APPLICATION_VOUCHER_CMS_JSON         836 /* application/voucher-cms+json   */
 #define COAP_MEDIATYPE_APPLICATION_VOUCHER_COSE_CBOR      65502 /* application/voucher-cose+cbor   */
 
 #define CVR_VERIFIED       0
