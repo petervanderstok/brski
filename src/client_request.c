@@ -80,44 +80,6 @@ void reset_ready(void){
 
 /* parameters for setting up pki */
 
-typedef struct psk_sni_def_t {
-  char* sni_match;
-  coap_bin_const_t *new_key;
-  coap_bin_const_t *new_hint;
-} psk_sni_def_t;
-
-typedef struct valid_psk_snis_t {
-  size_t count;
-  psk_sni_def_t *psk_sni_list;
-} valid_psk_snis_t;
-
-static valid_psk_snis_t valid_psk_snis = {0, NULL};
-
-typedef struct id_def_t {
-  char *hint_match;
-  coap_bin_const_t *identity_match;
-  coap_bin_const_t *new_key;
-} id_def_t;
-
-typedef struct valid_ids_t {
-  size_t count;
-  id_def_t *id_list;
-} valid_ids_t;
-
-static valid_ids_t valid_ids = {0, NULL};
-typedef struct pki_sni_def_t {
-  char* sni_match;
-  char *new_cert;
-  char *new_ca;
-} pki_sni_def_t;
-
-typedef struct valid_pki_snis_t {
-  size_t count;
-  pki_sni_def_t *pki_sni_list;
-} valid_pki_snis_t;
-
-static valid_pki_snis_t valid_pki_snis = {0, NULL};
-
 
 client_request_t *CLIENT_REQUEST = NULL;
 
@@ -128,6 +90,14 @@ client_request_init(void){
 	temp->next = CLIENT_REQUEST;
 	CLIENT_REQUEST = temp;
 	CLIENT_REQUEST->ctx = NULL;
+	CLIENT_REQUEST->valid_psk_snis.count = 0;
+	CLIENT_REQUEST->valid_psk_snis.psk_sni_list = NULL;
+	CLIENT_REQUEST->valid_ids.count = 0;
+	CLIENT_REQUEST->valid_ids.id_list = NULL;
+	CLIENT_REQUEST->valid_pki_snis.count = 0;
+	CLIENT_REQUEST->valid_pki_snis.pki_sni_list = NULL;	
+	CLIENT_REQUEST->valid_ihs.count = 0;
+	CLIENT_REQUEST->valid_ihs.ih_list = NULL;	
 	CLIENT_REQUEST->verify_cn_callback = NULL; 
 	CLIENT_REQUEST->use_pem_buf = CERTIFICATES_ON_FILE;
  	CLIENT_REQUEST->cert_file = NULL; /* Combined certificate and private key in PEM */
@@ -166,6 +136,16 @@ client_context(coap_context_t *ctx){
 	return NULL;
 }
 
+static client_request_t *
+client_session(coap_session_t *session){
+	client_request_t *temp = CLIENT_REQUEST;
+	while (temp != NULL){
+		if (temp->session == session) return temp;
+		temp = temp->next;
+	}
+	return NULL;
+}
+
 static coap_string_t output_file = { 0, NULL };   /* output file name */
 static FILE *file = NULL;               /* output file stream */
 
@@ -178,21 +158,6 @@ static FILE *file = NULL;               /* output file stream */
 
 #define BOOT_KEY    1
 #define BOOT_NAME   2
-
-
-typedef struct ih_def_t {
-  char* hint_match;
-  coap_bin_const_t *new_identity;
-  coap_bin_const_t *new_key;
-} ih_def_t;
-
-typedef struct valid_ihs_t {
-  size_t count;
-  ih_def_t *ih_list;
-} valid_ihs_t;
-
-static valid_ihs_t valid_ihs = {0, NULL};
-
 
 typedef struct MC_return_t {
 	void * next;
@@ -564,20 +529,21 @@ verify_ih_callback(coap_str_const_t *hint,
   char lhint[COAP_DTLS_HINT_LENGTH];
   static coap_dtls_cpsk_info_t psk_identity_info;
   size_t i;
+  client_request_t *client = client_session(c_session);
 
   snprintf(lhint, sizeof(lhint), "%.*s", (int)hint->length, hint->s);
   coap_log(LOG_INFO, "Identity Hint '%s' provided\n", lhint);
 
   /* Test for hint to possibly change identity + key */
-  for (i = 0; i < valid_ihs.count; i++) {
-    if (strcmp(lhint, valid_ihs.ih_list[i].hint_match) == 0) {
+  for (i = 0; i < client->valid_ihs.count; i++) {
+    if (strcmp(lhint, client->valid_ihs.ih_list[i].hint_match) == 0) {
       /* Preset */
       psk_identity_info = *psk_info;
-      if (valid_ihs.ih_list[i].new_key) {
-        psk_identity_info.key = *valid_ihs.ih_list[i].new_key;
+      if (client->valid_ihs.ih_list[i].new_key) {
+        psk_identity_info.key = *client->valid_ihs.ih_list[i].new_key;
       }
-      if (valid_ihs.ih_list[i].new_identity) {
-        psk_identity_info.identity = *valid_ihs.ih_list[i].new_identity;
+      if (client->valid_ihs.ih_list[i].new_identity) {
+        psk_identity_info.identity = *client->valid_ihs.ih_list[i].new_identity;
       }
       coap_log(LOG_INFO, "Switching to using '%s' identity + '%s' key\n",
                psk_identity_info.identity.s, psk_identity_info.key.s);
@@ -1016,6 +982,7 @@ create_uri_options(client_request_t *client, uint16_t ct){
 static coap_dtls_key_t *
 verify_pki_sni_callback(const char *sni, void *arg) 
 {
+
   /* Preset with the defined keys */
   client_request_t *client =   (client_request_t *)arg;
   coap_dtls_key_t *dtls_key = &client->dtls_key;
@@ -1038,16 +1005,16 @@ verify_pki_sni_callback(const char *sni, void *arg)
   if (sni[0]) {
     size_t i;
     coap_log(LOG_INFO, "SNI '%s' requested\n", sni);
-    for (i = 0; i < valid_pki_snis.count; i++) {
+    for (i = 0; i < client->valid_pki_snis.count; i++) {
       /* Test for SNI to change cert + ca */
-      if (strcasecmp(sni, valid_pki_snis.pki_sni_list[i].sni_match) == 0) {
+      if (strcasecmp(sni, client->valid_pki_snis.pki_sni_list[i].sni_match) == 0) {
         coap_log(LOG_INFO, "Switching to using cert '%s' + ca '%s'\n",
-                 valid_pki_snis.pki_sni_list[i].new_cert,
-                 valid_pki_snis.pki_sni_list[i].new_ca);
+                 client->valid_pki_snis.pki_sni_list[i].new_cert,
+                 client->valid_pki_snis.pki_sni_list[i].new_ca);
         dtls_key->key_type = COAP_PKI_KEY_PEM;
-        dtls_key->key.pem.public_cert = valid_pki_snis.pki_sni_list[i].new_cert;
-        dtls_key->key.pem.private_key = valid_pki_snis.pki_sni_list[i].new_cert;
-        dtls_key->key.pem.ca_file = valid_pki_snis.pki_sni_list[i].new_ca;
+        dtls_key->key.pem.public_cert = client->valid_pki_snis.pki_sni_list[i].new_cert;
+        dtls_key->key.pem.private_key = client->valid_pki_snis.pki_sni_list[i].new_cert;
+        dtls_key->key.pem.ca_file = client->valid_pki_snis.pki_sni_list[i].new_ca;
         break;
       }
     }
@@ -1127,10 +1094,10 @@ setup_cpsk(
   client->dtls_psk.validate_ih_call_back = verify_ih_callback;
   client->dtls_psk.ih_call_back_arg = &client->dtls_psk.psk_info;
   if (client->uri.host.length)
-    memcpy(client->client_sni, client->uri.host.s,
+       memcpy(client->client_sni, client->uri.host.s,
            min(client->uri.host.length, sizeof(client->client_sni) - 1));
   else
-    memcpy(client->client_sni, "localhost", 9);
+       memcpy(client->client_sni, "localhost", 9);
   client->dtls_psk.client_sni = client->client_sni;
   client->dtls_psk.psk_info.identity.s = identity;
   client->dtls_psk.psk_info.identity.length = identity_len;
@@ -1530,48 +1497,46 @@ coap_start_request(client_request_t *client, uint16_t ct){
   return 0;
 }
 
+static void free_valid(client_request_t *client){
+  for (uint i = 0; i < client->valid_ihs.count; i++) {
+    free(client->valid_ihs.ih_list[i].hint_match);
+    coap_delete_bin_const(client->valid_ihs.ih_list[i].new_identity);
+    coap_delete_bin_const(client->valid_ihs.ih_list[i].new_key);
+  }
+  if (client->valid_ihs.count) free(client->valid_ihs.ih_list);
+  for (uint i = 0; i < client->valid_psk_snis.count; i++) {
+    free(client->valid_psk_snis.psk_sni_list[i].sni_match);
+    coap_delete_bin_const(client->valid_psk_snis.psk_sni_list[i].new_hint);
+    coap_delete_bin_const(client->valid_psk_snis.psk_sni_list[i].new_key);
+  }
+  if (client->valid_psk_snis.count)
+    free(client->valid_psk_snis.psk_sni_list);
 
+  for (uint i = 0; i < client->valid_ids.count; i++) {
+    free(client->valid_ids.id_list[i].hint_match);
+    coap_delete_bin_const(client->valid_ids.id_list[i].identity_match);
+    coap_delete_bin_const(client->valid_ids.id_list[i].new_key);
+  }
+  if (client->valid_ids.count)
+    free(client->valid_ids.id_list);
+  for (uint i = 0; i < client->valid_pki_snis.count; i++) {
+    free(client->valid_pki_snis.pki_sni_list[i].sni_match);
+    free(client->valid_pki_snis.pki_sni_list[i].new_cert);
+    free(client->valid_pki_snis.pki_sni_list[i].new_ca);
+  }
+  if (client->valid_pki_snis.count)
+    free(client->valid_pki_snis.pki_sni_list); 
+}
+
+ 
 static void 
 end_coap_client(client_request_t *client){
-  size_t i;
-  for (uint i = 0; i < valid_ihs.count; i++) {
-    free(valid_ihs.ih_list[i].hint_match);
-    coap_delete_bin_const(valid_ihs.ih_list[i].new_identity);
-    coap_delete_bin_const(valid_ihs.ih_list[i].new_key);
-  }
-  if (valid_ihs.count) free(valid_ihs.ih_list);
-    if (client->ca_mem)
+ if (client->ca_mem)
     free(client->ca_mem);
   if (client->cert_mem)
     free(client->cert_mem);
-  for (i = 0; i < valid_psk_snis.count; i++) {
-    free(valid_psk_snis.psk_sni_list[i].sni_match);
-    coap_delete_bin_const(valid_psk_snis.psk_sni_list[i].new_hint);
-    coap_delete_bin_const(valid_psk_snis.psk_sni_list[i].new_key);
-  }
-  if (valid_psk_snis.count)
-    free(valid_psk_snis.psk_sni_list);
-
-  for (i = 0; i < valid_ids.count; i++) {
-    free(valid_ids.id_list[i].hint_match);
-    coap_delete_bin_const(valid_ids.id_list[i].identity_match);
-    coap_delete_bin_const(valid_ids.id_list[i].new_key);
-  }
-  if (valid_ids.count)
-    free(valid_ids.id_list);
-  for (i = 0; i < valid_pki_snis.count; i++) {
-    free(valid_pki_snis.pki_sni_list[i].sni_match);
-    free(valid_pki_snis.pki_sni_list[i].new_cert);
-    free(valid_pki_snis.pki_sni_list[i].new_ca);
-  }
-  if (valid_pki_snis.count)
-    free(valid_pki_snis.pki_sni_list);
-
-  coap_cleanup();
   coap_delete_optlist(client->optlist);
-  client->optlist = NULL;
-  if (client->session != NULL)
-           coap_session_release( client->session );
+  client->optlist = NULL;  
   if (client->ctx != NULL){
 	  coap_free_context( client->ctx );
   }
@@ -1583,10 +1548,25 @@ end_coap_client(client_request_t *client){
 	 uint8_t *temp = NULL;
 	 memcpy(&temp, &(client->uri.host.s), sizeof(uint8_t *));
 	 coap_free( temp);
-  }
+  } 
   coap_free(client->the_token.s);
-  coap_free(client);  
-  coap_cleanup();
+  free_valid(client);  
+}
+
+void kill_client( client_request_t * client){
+	if (CLIENT_REQUEST == client){
+		CLIENT_REQUEST = client->next;
+		end_coap_client( client);
+	}
+	client_request_t *temp = CLIENT_REQUEST;
+	while (temp != NULL){
+		if (client == temp->next){
+			temp->next = client->next;
+			end_coap_client(client);
+			temp = NULL;
+		}
+		if (temp != NULL)temp = temp->next;
+	}
 }
 
 void
@@ -1595,7 +1575,9 @@ Clean_client_request(void){
   while (temp != NULL) {
 	  CLIENT_REQUEST = temp->next;
       end_coap_client(temp);
+      coap_free(temp);
       temp = CLIENT_REQUEST;
-  }   
-  remove_URIs();  
+  }
+  remove_URIs(); 
+  coap_cleanup(); 
 }
