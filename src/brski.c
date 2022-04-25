@@ -1149,7 +1149,6 @@ brksi_make_signed_rv(coap_string_t *payload, coap_string_t *request_voucher, cha
    } else{
       ok = brski_cose_sign_payload(payload, request_voucher, pledge_comb );
    }
-
  exit:  
    if (regis_crt.s != NULL)coap_free(regis_crt.s);
    mbedtls_x509_crt_free( &registrar_crt ); 
@@ -1540,11 +1539,6 @@ brski_json_voucherrequest(coap_string_t *voucherrequest, coap_string_t *certific
 	nr += json_put_binary(&buf, certificate->s, certificate->length);	
 	nr += json_end_object(&buf);
 	nr += json_end_object(&buf);
-		
-//	fprintf(stderr, "JSON voucher_request looks like:\n");
-//	for (uint qq = 0; qq < nr; qq++) fprintf(stderr,"%c",tmp_buf[qq]);
-//	fprintf(stderr,"\n");
-	
 	coap_free(serial);
 	assert(nr < len);	
 	voucherrequest->length = nr;
@@ -1960,9 +1954,7 @@ create_x5bag(coap_string_t *cert_raw, char *cert_name){
       cert_raw->s = coap_malloc(raw_len);
       cert_raw->length = raw_len;
       memcpy(cert_raw->s, ptr, raw_len);  
-      mbedtls_x509_crt_free(&file_crt);
     }
-    return 0;
 exit:
     mbedtls_x509_crt_free(&file_crt);
     return ok;
@@ -2017,42 +2009,13 @@ sign_sig_structure(mbedtls_ecdsa_context *key, int cose_alg, coap_string_t *tobe
     nr += cbor_put_bytes(&buf, NULL, 0);    
     nr += cbor_put_bytes( &buf, tobesignedpl->s, tobesignedpl->length);
     assert(nr < struct_len);
-/*    
-    fprintf(stderr,"structure to be signed :\n");
-    for (uint qq = 0; qq < nr; qq++)fprintf(stderr," %02x",Sig_structure[qq]);
-    fprintf(stderr,"\n");
-*/
     CHECK( mbedtls_sha256_ret( Sig_structure, nr, hash, 0 ) );
-/*   
-    fprintf(stderr,"hash value is \n");
-    for (uint qq = 0; qq < HASH256_BYTES; qq++)fprintf(stderr," %02x",hash[qq]);
-    fprintf(stderr,"\n");
- */ 
     size_t asn_len = MBEDTLS_ECDSA_MAX_LEN;
     unsigned char asn_sig[MBEDTLS_ECDSA_MAX_LEN];
 	CHECK(mbedtls_ecdsa_write_signature( key, MBEDTLS_MD_SHA256, hash, sizeof(hash), asn_sig, &asn_len,
-                         mbedtls_ctr_drbg_random, &ctr_drbg ) );
-/*   
-    fprintf(stderr,"generated asn signature with length %d \n",(int)asn_len);
-    for (uint qq =0 ; qq < asn_len; qq++)fprintf(stderr," %02x", asn_sig[qq]);
-    fprintf(stderr,"\n");
-  */  
+                         mbedtls_ctr_drbg_random, &ctr_drbg ) );  
     extract_asn_signature(asn_sig, asn_sig + asn_len, signature);
     *sig_len = 64;
- /*  
-    fprintf(stderr,"extracted signature with length %d \n",(int)*sig_len);
-    for (uint qq =0 ; qq < *sig_len; qq++)fprintf(stderr," %02x", signature[qq]);
-    fprintf(stderr,"\n");
-  */ 
-  /* 
-    unsigned char asn_signature[MBEDTLS_ECDSA_MAX_LEN]; 
-    memset(asn_signature,0,MBEDTLS_ECDSA_MAX_LEN);
-    create_asn_signature(signature, asn_signature, &asn_len); 
-    
-    CHECK(mbedtls_ecdsa_read_signature( key , hash, sizeof(hash),
-                           asn_signature, asn_len));
-     fprintf(stderr,"signed and verified ok \n");
-     * */                      
     ok = 0;
 exit:
     coap_free(Sig_structure);
@@ -2111,16 +2074,12 @@ brski_cose_sign_payload(coap_string_t *signedpl, coap_string_t *tobesignedpl,
     nr += fill_unprot_field( &buf, key_hash, HASH256_BYTES, &cert_raw);
     nr += cbor_put_bytes(
                     &buf, tobesignedpl->s, tobesignedpl->length);
-    nr += cbor_put_bytes( &buf, signature, sig_len);  
+    nr += cbor_put_bytes( &buf, signature, sig_len); 
     coap_free(cert_raw.s);
     assert(nr < buf_len); 
 	signedpl->length = nr;
-	signedpl->s = tmp_buf;
-/*	
-	fprintf(stderr,"signed voucher_request is \n");
-	for (uint qq = 0; qq < signedpl->length; qq++)fprintf(stderr, " %02x",signedpl->s[qq]);
-	fprintf(stderr,"\n");	
-*/
+	signedpl->s = coap_malloc(nr);
+	memcpy(signedpl->s, tmp_buf, nr); 
 	ok = 0;
 exit:           
     mbedtls_pk_free( key);
@@ -2666,15 +2625,6 @@ brski_check_pledge_request(voucher_t *req_contents){
 	   coap_log(LOG_WARNING, " signature of prior signed request does not match \n");
 	   return 1;
    }
-//   fprintf(stderr,"print idevid in registrar voucher_request \n");
-//   for (uint qq =0; qq < req_contents->cvr_idevid_len; qq++)fprintf(stderr," %02x", req_contents->cvr_idevid[qq]);
-//   fprintf(stderr,"\n");
-//   voucher_t *req_pledge = brski_parse_cbor_voucher(pledge_request);
-//   if (req_pledge != NULL){
-//       fprintf(stderr,"print idevid in pledge voucher_request \n");
-//       for (uint qq =0; qq < req_pledge->cvr_idevid_len; qq++)fprintf(stderr," %02x", req_pledge->cvr_idevid[qq]);
-//       fprintf(stderr,"\n"); 
-//   } else fprintf(stderr, "req_pledge was not parsed \n");  
 /* check serial number  */
    /* unsigned document pledge_request is not used */
    if (pledge_request->s != NULL)coap_free(pledge_request->s);
@@ -2887,33 +2837,14 @@ brski_check_signature(char *cert_file_name, uint8_t *prot_buf, uint8_t *sig_buf,
     nr += cbor_put_bytes(&buf, NULL, 0);    
     nr += cbor_put_bytes( &buf, document->s, document->length);
     assert(nr < struct_len);
- /*   
-    fprintf(stderr,"structure to be verified :\n");
-    for (uint qq = 0; qq < nr; qq++)fprintf(stderr," %02x",Sig_structure[qq]);
-    fprintf(stderr,"\n");
-   */
     CHECK(mbedtls_sha256_ret( Sig_structure, nr, hash, 0 ) );
     coap_log(LOG_DEBUG,"brski_check_signature parses cert-file in %s\n",cert_file_name);
     CHECK(mbedtls_x509_crt_parse_file( &crt, cert_file_name)); 
-/*     
-    fprintf(stderr,"verify_cose_signature with %s \n", cert_file_name);  
-    fprintf(stderr,"hash is \n");
-    for (uint qq = 0; qq < HASH256_BYTES; qq++) fprintf(stderr," %02x",hash[qq]);
-    fprintf(stderr,"\n");     
-    fprintf(stderr,"signature is with length %d\n", (int)signature_len);
-    for (uint qq = 0; qq < signature_len; qq++) fprintf(stderr," %02x",signature[qq]);
-    fprintf(stderr,"\n"); 
- */ 
     /* convert 64 bit signature to asn signature */
     unsigned char asn_signature[MBEDTLS_ECDSA_MAX_LEN]; 
     size_t asn_len = 0;
     memset(asn_signature,0,MBEDTLS_ECDSA_MAX_LEN);
-    create_asn_signature(signature, asn_signature, &asn_len); 
-/*    
-    fprintf(stderr,"asn_signature is with length %d\n", (int)asn_len);
-    for (uint qq = 0; qq < asn_len; qq++) fprintf(stderr," %02x",asn_signature[qq]);
-    fprintf(stderr,"\n");   
-*/                                         
+    create_asn_signature(signature, asn_signature, &asn_len);                                         
     CHECK(mbedtls_ecdsa_read_signature( mbedtls_pk_ec( crt.pk) , hash, sizeof(hash),
                            asn_signature, asn_len ) );
     ok = 0;
@@ -3134,15 +3065,7 @@ brski_check_voucher(coap_string_t *masa_voucher, coap_string_t *request_voucher)
 	voucher_t *rq_vc = NULL;
 	voucher_t *vc    = NULL;
 	if (JSON_set() == JSON_ON){
-/*		fprintf(stderr," parse json request_voucher \n");
-		for (uint qq = 0; qq < request_voucher->length; qq ++)fprintf(stderr,"%c", request_voucher->s[qq]);
-		* */
 		rq_vc = brski_parse_json_voucher(request_voucher);
-		/*
-		fprintf(stderr,"\n parse json voucher \n");		
-		for (uint qq = 0; qq < masa_voucher->length; qq ++)fprintf(stderr,"%c", masa_voucher->s[qq]);
-		fprintf(stderr,"\n");
-		* */
 		vc    = brski_parse_json_voucher(masa_voucher);
 	} else {
 		 rq_vc = brski_parse_cbor_voucher(request_voucher);
