@@ -12,6 +12,51 @@
 #include "coap_session.h"
 #include "resource.h"
 
+
+typedef struct psk_sni_def_t {
+  char* sni_match;
+  coap_bin_const_t *new_key;
+  coap_bin_const_t *new_hint;
+} psk_sni_def_t;
+
+typedef struct valid_psk_snis_t {
+  size_t count;
+  psk_sni_def_t *psk_sni_list;
+} valid_psk_snis_t;
+
+typedef struct id_def_t {
+  char *hint_match;
+  coap_bin_const_t *identity_match;
+  coap_bin_const_t *new_key;
+} id_def_t;
+
+typedef struct valid_ids_t {
+  size_t count;
+  id_def_t *id_list;
+} valid_ids_t;
+
+typedef struct pki_sni_def_t {
+  char* sni_match;
+  char *new_cert;
+  char *new_ca;
+} pki_sni_def_t;
+
+typedef struct valid_pki_snis_t {
+  size_t count;
+  pki_sni_def_t *pki_sni_list;
+} valid_pki_snis_t;
+
+typedef struct ih_def_t {
+  char* hint_match;
+  coap_bin_const_t *new_identity;
+  coap_bin_const_t *new_key;
+} ih_def_t;
+
+typedef struct valid_ihs_t {
+  size_t count;
+  ih_def_t *ih_list;
+} valid_ihs_t;
+
 typedef int16_t (*coap_resp_handler_t)
        (unsigned char *,     /* response payload */
        size_t size,          /* size of payload  */
@@ -40,6 +85,10 @@ typedef struct client_request_t {
    coap_dtls_pki_t  dtls_pki;
    coap_dtls_cpsk_t dtls_psk;
    coap_dtls_key_t  dtls_key;
+   valid_psk_snis_t valid_psk_snis;
+   valid_ids_t      valid_ids;
+   valid_pki_snis_t valid_pki_snis;
+   valid_ihs_t      valid_ihs;
    char    client_sni[256];
    char    *cert_file; /* Combined certificate and private key in PEM */
    char    *ca_file;   /* CA for cert_file - for cert checking in PEM */
@@ -86,6 +135,9 @@ fill_keystore(client_request_t *client);
 
 void 
 Clean_client_request(void);
+
+void 
+kill_client( client_request_t * client);
 
 int8_t 
 is_ready(void);
